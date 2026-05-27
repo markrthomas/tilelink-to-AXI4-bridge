@@ -29,3 +29,9 @@ coverage_html/
 
 # Editor / tooling
 .claude/
+NOTES
+
+# SymbiYosys scratch dirs (one per task in tluhtoaxi4.sby)
+verification/formal/tluhtoaxi4_bmc/
+verification/formal/tluhtoaxi4_cover/
+verification/formal/tluhtoaxi4/

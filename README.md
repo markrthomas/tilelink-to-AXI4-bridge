@@ -61,12 +61,17 @@ Individual stages:
 | Chisel → SystemVerilog only | `make elab` |
 | Verilator build only (requires SV present) | `make build` |
 | Run the simulation | `make sim` |
+| Verilator `--lint-only` | `make lint` |
+| Lint + sim (fast CI gate) | `make regress` |
+| Coverage build + `coverage.info` | `make coverage` |
+| HTML coverage report (requires `lcov`) | `make cov-report` |
+| SymbiYosys BMC + cover | `make formal` |
+| Regress + coverage + formal (full local CI) | `make ci` |
 | Clean every generated artifact | `make clean` |
 
-Targets the [DV_STANDARDS](../DV_STANDARDS.md) workspace expects but that
-this repo has **not yet** implemented: `lint`, `regress`, `coverage`,
-`formal`, `ci`. Their introduction is tracked in
-[`doc/PLAN.md`](doc/PLAN.md).
+The remaining [DV_STANDARDS](../DV_STANDARDS.md) gap is the GitHub
+Actions workflow (`.github/workflows/ci.yml`), tracked in
+[`doc/PLAN.md`](doc/PLAN.md) Phase 7.
 
 ## Bridge mapping (summary)
 
@@ -93,4 +98,7 @@ roadmap (PLAN.md Phase 5).
 | Directed sim | 9 directed jobs (aligned, sub-bus high/low, 4-beat + 2-beat bursts, partial-strb single + burst, hint, byte at unaligned offset) |
 | Random sim | 30 randomized jobs per run (seed `0xC0FFEE`) |
 | Last result | **PASS** — 47 jobs, 0 errors, 400 sim ticks |
-| Lint / Coverage / Formal / Cocotb / CI | Not implemented yet — see `doc/PLAN.md` |
+| Lint | `make lint` clean (0 warnings, 5 documented `UNUSEDSIGNAL` suppressions) |
+| Coverage | 98.9% line (90/91) — above the 80% DV_STANDARDS floor |
+| Formal | `make formal` — BMC depth 30 + 3 cover witnesses (F2 / F6 / F8 / corrupt-discipline) |
+| Cocotb / GitHub Actions CI | Not implemented yet — see `doc/PLAN.md` |

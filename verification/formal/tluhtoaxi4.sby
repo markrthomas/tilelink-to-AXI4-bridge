@@ -1,0 +1,35 @@
+# tluhtoaxi4.sby — SymbiYosys proof script for TLUHToAXI4
+#
+# Tasks:
+#   bmc   — safety: F2 (source preservation), F6 (AW/AR INCR + size=3),
+#                   F8 (AW/AR address aligned), AccessAck-not-corrupt
+#   cover — reachability: C1 AccessAck, C2 AccessAckData, C3 HintAck
+#
+# Run all : sby -f tluhtoaxi4.sby
+# Bmc only: sby -f tluhtoaxi4.sby bmc
+# Cov only: sby -f tluhtoaxi4.sby cover
+
+[tasks]
+bmc
+cover
+
+[options]
+bmc:   mode bmc
+cover: mode cover
+depth 30
+
+[engines]
+smtbmc
+
+[script]
+read -sv tluhtoaxi4_props.sv TLUHToAXI4.sv
+hierarchy -top tluhtoaxi4_props
+proc
+opt
+memory_map
+flatten
+opt
+
+[files]
+tluhtoaxi4_props.sv
+../../generated/TLUHToAXI4.sv

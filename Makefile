@@ -3,7 +3,8 @@
 #   make lint        — Verilator --lint-only on the emitted SV
 #   make regress     — lint + sim (DV_STANDARDS fast CI gate)
 #   make coverage    — Verilator --coverage build + coverage.info
-#   make ci          — regress + coverage (no formal yet)
+#   make formal      — SymbiYosys BMC + cover (verification/formal/)
+#   make ci          — regress + coverage + formal
 #   make elab        — Chisel -> SystemVerilog into generated/
 #   make build       — Verilator TB build (no run)
 #   make clean       — wipe every generated artifact
@@ -60,7 +61,7 @@ COV_FLAGS := \
     -Mdir $(COV_DIR) \
     -CFLAGS "-std=c++17 -O2"
 
-.PHONY: all elab build sim run lint regress coverage cov-report ci clean
+.PHONY: all elab build sim run lint regress coverage cov-report formal ci clean
 
 all: sim
 
@@ -99,7 +100,11 @@ cov-report: coverage
 	genhtml $(COV_INFO) -o coverage_html
 	@echo "HTML report: coverage_html/index.html"
 
-ci: regress coverage
+formal:
+	$(MAKE) -C verification/formal all
+
+ci: regress coverage formal
 
 clean:
 	rm -rf $(GEN_DIR) $(BUILD_DIR) $(COV_DIR) sim.vcd $(COV_INFO) coverage_html target project/target project/project
+	$(MAKE) -C verification/formal clean
