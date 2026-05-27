@@ -6,17 +6,17 @@
 
 | Area | Status |
 |------|--------|
-| RTL | `TLUHToAXI4` elaborated cleanly (Chisel 7.7.0 → firtool 1.139.0 → 164-line `generated/TLUHToAXI4.sv`) |
-| Directed simulation | 9 directed jobs via Verilator C++ TB (aligned, sub-bus high/low, 32 B + 16 B bursts, PutPartial single + burst, Hint, byte-at-offset) |
-| Random simulation | 30 randomized jobs per run (seed `0xC0FFEE`) |
-| Last result | **PASS** — 47 jobs, 0 errors, 400 sim ticks |
+| RTL | `TLUHToAXI4` (parallel read + write engines, 1-deep hint slot, fixed-priority D arbiter with read-burst lock) — Chisel 7.7.0 → firtool 1.139.0 SV |
+| Directed simulation | 13 directed jobs (aligned / sub-bus / bursts / PutPartial / Hint / byte-at-offset / explicit concurrent Put→Get→Hint) |
+| Random simulation | 100 randomized jobs per run (seed `0xC0FFEE`, rotating sources, op mix Put/Get/Hint, includes `PutPartialData` with random mask) |
+| Last result | **PASS** — 121 jobs, 0 errors, 734 sim ticks, **peak concurrency = 3** (read + write + hint simultaneously in flight) |
 | Lint | `make lint` — Verilator `--lint-only -Wall`, 0 warnings (5 expected `UNUSEDSIGNAL` suppressions, documented in `Makefile`) |
 | Regress | `make regress` — `lint + sim`, the fast CI gate |
-| Coverage | `make coverage` — Verilator `--coverage` → `coverage.info`. 98.9% line (90/91), above the 80% DV_STANDARDS floor |
-| Formal | `make formal` — SymbiYosys BMC + cover. F2/F6/F8 + corrupt-discipline prove at depth 30; C1/C2/C3 reachability witnesses found ≤ step 7 |
+| Coverage | `make coverage` — Verilator `--coverage` → `coverage.info`. 97.1% line (132/136), above the 80% DV_STANDARDS floor |
+| Formal | `make formal` — SymbiYosys BMC + cover. Per-engine F2/F3/F6/F8 + corrupt-discipline prove at depth 30; C1/C2/C3 witnesses found ≤ step 7 |
 | Cocotb | *(not implemented)* |
 | CI (GitHub Actions) | *(not implemented)* — `make ci` runs `regress + coverage + formal` locally |
-| Documentation | `README.md`, `doc/DESIGN_SPEC.md`, this `doc/PLAN.md` |
+| Documentation | `README.md`, `doc/DESIGN_SPEC.md`, this `doc/PLAN.md`, `doc/TUTORIAL.md` |
 
 The repo passes the workspace-level `make sim` requirement of
 [`DV_STANDARDS.md`](../../DV_STANDARDS.md) but is missing every other
@@ -100,34 +100,59 @@ bridge:
   it the engine produced spurious counter-examples by mutating the source
   mid-burst.
 
-Future work: F1/F4 will be revisited under [Phase 5 — Multiple
-outstanding](#5--multiple-outstanding-transactions) when the bridge can
-have more than one transaction in flight.
+Phase-4 follow-up: F1 and F4 were on the original wishlist but require
+multiple in-flight transactions to be interesting (counting them, checking
+that ID-vs-source matches survive concurrency).  They were brought into
+the multi-outstanding work below as F3 + per-engine F2, rather than
+deferred.
 
 ---
 
 ## Medium-term
 
-### 5 — Multiple outstanding transactions
+### ~~5 — Multiple outstanding transactions~~ ✓ DONE 2026-05-26
 
-**What:** TileLink encodes concurrency via `source`. The current bridge
-serialises everything, leaving throughput on the table. The interesting
-case is overlapping a read and a write: AXI has separate AW/W and AR/R,
-so the two can fully pipeline.
+Refactored the bridge from a monolithic 7-state FSM into three independent
+engines that share TL-A by opcode and TL-D via a fixed-priority arbiter:
 
-**Work items:**
+- **Read engine** (`sRIdle / sRAR / sRResp`) — handles `Get → AR → R →
+  AccessAckData`.
+- **Write engine** (`sWIdle / sWAW / sWData / sWResp`) — handles
+  `Put → AW + W → AccessAck` with the same "peek in sIdle" trick as
+  before so the bridge can latch context before the first A.fire.
+- **Hint slot** (1-deep) — handles `Hint → HintAck` without occupying
+  AXI bandwidth.
+- **D-channel arbiter** — fixed priority `W > R > H` with a sticky
+  read-burst lock so an in-flight `AccessAckData` burst can never be
+  preempted by a write or hint response.
 
-- Refactor the FSM into two parallel engines (read engine, write engine)
-  that arbitrate the shared `A` channel by opcode and the shared `D`
-  channel by priority (typically writes drain first).
-- Add a small `source → ID` table for multi-source hosts (or just forward
-  `source` as ID directly and rely on AXI's ID-based ordering rules).
-- Extend the TB to interleave reads and writes from distinct `source`
-  values; assert that responses can return out-of-order relative to
-  issue order (per TL spec).
+`source` is forwarded directly as the AXI ID; no source→ID translation
+table is needed because each engine has at most one outstanding
+transaction.
 
-**Exit:** TB passes a randomized interleaved workload of 100+ jobs with
-≥ 2 concurrent transactions in flight at peak.
+**Verification update:**
+
+- TB now matches D responses to requests by per-source FIFO (so it
+  tolerates out-of-order completion), tracks the count of outstanding
+  transactions live, and asserts a peak-concurrency floor of ≥ 2.
+- New explicit directed test (`Test 10`) issues a 4-beat Put followed by
+  a Get and a Hint with distinct sources, hitting all three engines.
+- Randomized sweep grew from 30 → 100 jobs, with rotating source IDs
+  and `PutPartialData` mixed in.
+- Result: **121 jobs, 0 errors, peak concurrency = 3** — all three
+  engines simultaneously in flight at the peak.
+- Formal wrapper reworked into per-engine ghosts (`r_pending` /
+  `w_pending` / `h_pending_g` with snapshotted source + size each).
+  F2 splits into three per-opcode assertions; F3 (D.size matches the
+  per-engine snapshotted A.size) added as a bonus.  Multi-beat Put
+  burst-stability is now confined to `w_in_burst` (peek through last
+  A.fire), leaving the master free to start a Get or Hint in parallel.
+  BMC depth 30 passes; C1 / C2 / C3 witnesses found at step 7 / 6 / 5.
+- Coverage held at 97.1% line (132 / 136) with the new arbiter + ghost
+  paths.
+
+**Exit met:** randomized workload of 100+ jobs passes with peak
+concurrency = 3 (specification was ≥ 2).
 
 ---
 

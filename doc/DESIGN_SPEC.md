@@ -169,59 +169,70 @@ bridge does not zero them).
 
 ## State machine
 
-7 states, declared at
-`src/main/scala/tlbridge/TLUHToAXI4.scala:28`.
+The bridge is split into three independent engines that share TL-A by
+opcode and TL-D via a fixed-priority arbiter.  All three may have one
+transaction in flight simultaneously (peak observed concurrency = 3 in
+the regression workload).  Engine state registers are declared at
+`src/main/scala/tlbridge/TLUHToAXI4.scala:53-79`.
+
+### Read engine — 3 states
 
 ```
-                              +-- (opcode == Get)  ----+
-                              |                        v
-              accept A        |                  +---------+   r_fire&last
-sIdle <-------------+         |          AR fire |sReadResp| ---------------+
-   |                |         +----------------> +---------+                |
-   |  Get / Hint    |                  |              ^                     |
-   |  consume A     |                  v              | beat                |
-   |  in sIdle      |             +---------+         |                     |
-   |                |  awfire     |sReadAR  |                               |
-   +- Put: PEEK A,  |     +-----> +---------+                               |
-      no fire       |     |                                                 |
-      sIdle->sWriteAW    |                                                 |
-                          |                                                 |
-            +---------+   |    +-----------+   wfire&last   +-----------+   |
-            |sWriteAW | --+--> |sWriteData | -------------> |sWriteResp |   |
-            +---------+        +-----------+                +-----------+   |
-                                ^   |                            |          |
-                                |   | beat                       | d_fire   |
-                                +---+                            v          |
-                                                              sIdle <-------+
-                              Hint:                              ^
-                                              sHintAck ----------+
-                                              (d_fire returns)
+                                    AR fire           r_fire && r.last
+   sRIdle --(a.fire isGet)--> sRAR ---------> sRResp -----------------+
+       ^                                                              |
+       +------------------------- sIdle on last R --------------------+
 ```
 
-Notes on the transitions:
+### Write engine — 4 states
 
-- **`sIdle` for writes — peek, don't fire.** TL guarantees the master
-  holds an A-beat valid until handshake. The bridge samples
-  `opcode`/`size`/`address`/`source` from a valid A-beat *without
-  asserting `a_ready`* and transitions to `sWriteAW`. The first
-  write beat is therefore consumed later in `sWriteData`, not in `sIdle`,
-  so its `data`/`mask` are not lost. See `isGet`/`isHint`/`isPut`
-  decoding in `src/main/scala/tlbridge/TLUHToAXI4.scala:79-91`.
-- **`sIdle` for `Get` / `Hint`.** A single A-beat carries the entire
-  request; `a_ready` is asserted in `sIdle` and the beat is consumed
-  immediately.
-- **`sReadResp` ⇄ `sIdle`** on the AXI R beat with `rlast=1`.
-- **`sWriteData` ⇄ `sWriteResp`** on the AXI W beat with our internally
-  computed `last` (which the bridge also drives onto `WLAST`).
-- **`sWriteResp` ⇄ `sIdle`** on `D.valid && D.ready` (the bridge couples
-  AXI `B.ready` to TL `D.ready` so B and D fire in lockstep).
+```
+                              AW fire           w.fire & last         d.fire
+   sWIdle --(a.valid Put, peek)--> sWAW ------> sWData -----------> sWResp --+
+       ^                                                                     |
+       +----------------------- sIdle on AccessAck D --------------------- --+
+```
+
+### Hint slot — single-bit pending flag
+
+```
+   !hPending --(a.fire isHint)--> hPending=1 ----d.fire HintAck----> hPending=0
+```
+
+### D-channel arbiter
+
+Three sources may be valid simultaneously: AXI `B` (write resp), AXI `R`
+(read resp), `hPending` (hint).  Fixed priority `W > R > H`, but a
+sticky `rBurstLock` flag locks the arbiter to R between the first
+non-last R beat and the last R beat so a multi-beat `AccessAckData`
+burst is never interrupted by a subsequently-arriving B or hint.
+
+### Notes on the transitions
+
+- **`sWIdle` peek-don't-fire.** TL guarantees the master holds an A-beat
+  valid until handshake. The bridge samples `opcode`/`size`/`address`/
+  `source` from a valid A-beat *without asserting `a_ready`* and
+  transitions to `sWAW`. The first write beat is therefore consumed
+  later in `sWData`, not in `sWIdle`, so its `data`/`mask` are not lost.
+  See `isGet`/`isHint`/`isPut` decoding in
+  `src/main/scala/tlbridge/TLUHToAXI4.scala:37-44`.
+- **`sRIdle` for `Get`.** A single A-beat carries the entire request;
+  `a_ready` is asserted in `sRIdle` (gated by `rState === sRIdle`) and
+  the beat fires immediately.
+- **Hint slot.** A `Hint` fires `a` immediately when `!hPending`, the
+  context is captured, and the response is emitted by the D arbiter
+  whenever no higher-priority source is competing for D.
+- **D-channel pipelining.** Because the read engine and write engine
+  use separate context registers (`rSource`/`rSize` vs.
+  `wSource`/`wSize`), the two responses can interleave on D —
+  but never within an R burst (read-burst lock).
 
 ## Limitations
 
-- **Single outstanding TL transaction.** A second `a_valid` is only
-  considered after the previous transaction's D-final-beat has been
-  accepted by the master. The TL `source` field is preserved end-to-end
-  but does not unlock concurrency in this implementation.
+- **One outstanding transaction per engine.** Two reads cannot be
+  in flight simultaneously, and two writes cannot.  A read + a write
+  + a hint *can*.  Multi-source-per-engine parallelism (e.g. two
+  outstanding reads) would need a per-source ID table.
 - **No atomics.** `ArithmeticData` / `LogicalData` are not decoded; the
   FSM stays in `sIdle` and the master would hang. Future work
   (`doc/PLAN.md` mid-term) maps these to AXI read-modify-write or
@@ -254,13 +265,20 @@ The TB in `test/cpp/tb_main.cpp` runs:
 | Directed: `PutPartialData` burst | strb = `0xF0`, `0x0F` at `0x600` |
 | Directed: `Hint` → `HintAck` | `0x700` |
 | Directed: byte (size=0) at unaligned offset | `0x803` |
-| Randomized | 30 jobs with `std::mt19937(0xC0FFEE)` |
+| Directed: explicit concurrency | 4-beat Put + Get + Hint with distinct sources at `0xA00`/`0xB00`/`0xC00` |
+| Randomized | 100 jobs with `std::mt19937(0xC0FFEE)`, rotating sources, op mix Put/Get/Hint incl. `PutPartialData` with random masks |
 
-Self-check: each `D` response is compared against the request's
-`source`/`size`/expected opcode; for `Get`, against a per-beat snapshot of
-the reference model taken at enqueue time; finally the AXI slave's memory
-is compared against the reference. Last recorded result on `main`:
-`*** PASS: 47 jobs, 0 errors, 400 sim ticks ***`.
+Self-check: each `D` response is matched to a request via a per-source
+FIFO (so out-of-order completion is tolerated); for `Get`, the per-beat
+data is compared against a snapshot of the reference model taken at
+enqueue time; finally the AXI slave's memory is compared against the
+reference.  The TB also live-tracks `outstandingGet + outstandingPut +
+outstandingHint` and asserts the peak floor of ≥ 2.  Last recorded
+result on `main`:
+`*** PASS: 121 jobs, 0 errors, 734 sim ticks, peak concurrency=3 ***`.
 
-A SymbiYosys formal proof of the response/source/burst-length invariants
-is planned but not implemented — see `doc/PLAN.md`.
+A SymbiYosys formal proof at `verification/formal/` covers per-engine
+F2 (source preservation), F3 (size preservation), F6 (`AxBURST`/`AxSIZE`),
+F8 (`AxADDR` alignment), and the no-corrupt-on-AccessAck/HintAck
+discipline — all at BMC depth 30 — plus three cover witnesses (write,
+read, hint completion).

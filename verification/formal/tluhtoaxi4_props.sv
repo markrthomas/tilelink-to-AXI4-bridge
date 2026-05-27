@@ -40,6 +40,9 @@ module tluhtoaxi4_props (
     initial f_past_valid = 1'b0;
     always @(posedge clock) f_past_valid <= 1'b1;
 
+    // chk gates every assertion / assumption that fires only post-reset.
+    wire chk = f_past_valid && !reset;
+
     // ----------------------------------------------------------------------
     // Free inputs — environment surfaces that the formal engine can choose.
     // ----------------------------------------------------------------------
@@ -217,74 +220,178 @@ module tluhtoaxi4_props (
     end
 
     // ======================================================================
-    // GHOST STATE — track the in-flight transaction so we can check F2.
+    // GHOST STATE — one in-flight transaction per bridge engine.
     //
-    // A transaction begins on the first cycle the master asserts A.valid
-    // with no transaction outstanding.  For Get/Hint the bridge fires A in
-    // the same cycle; for Put the bridge "peeks" A in sIdle (no fire) but
-    // still commits to that source for the whole burst (latched into
-    // regSource).  The snapshot of (source, opcode, size) at that first
-    // cycle is what the eventual D response must carry.
+    // The bridge has three parallel engines, each able to hold one
+    // outstanding TL transaction:
+    //   READ  : Get  → AR + R → AccessAckData
+    //   WRITE : Put  → AW + W → AccessAck
+    //   HINT  : Hint → (none) → HintAck
     //
-    // The transaction ends on the LAST D-channel beat:
-    //   AccessAckData : d.fire && r.fire && r.last     (read burst tail)
-    //   AccessAck     : d.fire                          (single-beat ack)
-    //   HintAck       : d.fire                          (single-beat ack)
+    // For each engine we snapshot (source, size) at the cycle the engine
+    // commits to the transaction:
+    //   Get   : the first A.fire (single-beat A handshake in sIdle of R)
+    //   Put   : the first A.valid the bridge peeks in sIdle of W
+    //   Hint  : the A.fire that admits the Hint into the 1-deep slot
+    //
+    // Each pending flag clears on the LAST D beat of that engine's response:
+    //   READ  : d.fire && d.opcode == AccessAckData && r.fire && r.last
+    //   WRITE : d.fire && d.opcode == AccessAck
+    //   HINT  : d.fire && d.opcode == HintAck
     // ======================================================================
-    reg        pending_xact;
-    reg [3:0]  xact_source;
-    reg [2:0]  xact_opcode;
-    reg [5:0]  xact_size;
+    wire isGetA  = (io_tl_a_bits_opcode == 3'd4);
+    wire isPutA  = (io_tl_a_bits_opcode == 3'd0) ||
+                   (io_tl_a_bits_opcode == 3'd1);
+    wire isHintA = (io_tl_a_bits_opcode == 3'd5);
 
-    initial pending_xact = 1'b0;
-    initial xact_source  = 4'd0;
-    initial xact_opcode  = 3'd0;
-    initial xact_size    = 6'd0;
-
+    wire a_fire = io_tl_a_valid && io_tl_a_ready;
     wire d_fire = io_tl_d_valid && io_tl_d_ready;
     wire r_fire = io_axi_r_valid && io_axi_r_ready;
 
-    wire xact_done_read  = pending_xact && d_fire &&
-                           (io_tl_d_bits_opcode == 3'd1) /* AccessAckData */ &&
-                           r_fire && io_axi_r_bits_last;
-    wire xact_done_other = pending_xact && d_fire &&
-                           (io_tl_d_bits_opcode != 3'd1);
-    wire xact_begin      = !pending_xact && io_tl_a_valid && !reset;
+    // ---- READ engine ghost ----
+    reg       r_pending;
+    reg [3:0] r_xact_source;
+    reg [5:0] r_xact_size;
+    initial r_pending     = 1'b0;
+    initial r_xact_source = 4'd0;
+    initial r_xact_size   = 6'd0;
+
+    wire r_begin = !r_pending && a_fire && isGetA;
+    wire r_done  = r_pending && d_fire &&
+                   (io_tl_d_bits_opcode == 3'd1) /* AccessAckData */ &&
+                   r_fire && io_axi_r_bits_last;
 
     always @(posedge clock) begin
         if (reset) begin
-            pending_xact <= 1'b0;
-            xact_source  <= 4'd0;
-            xact_opcode  <= 3'd0;
-            xact_size    <= 6'd0;
+            r_pending     <= 1'b0;
+            r_xact_source <= 4'd0;
+            r_xact_size   <= 6'd0;
         end else begin
-            if (xact_begin) begin
-                pending_xact <= 1'b1;
-                xact_source  <= io_tl_a_bits_source;
-                xact_opcode  <= io_tl_a_bits_opcode;
-                xact_size    <= io_tl_a_bits_size;
+            if (r_begin) begin
+                r_pending     <= 1'b1;
+                r_xact_source <= io_tl_a_bits_source;
+                r_xact_size   <= io_tl_a_bits_size;
             end
-            if (xact_done_read || xact_done_other) begin
-                pending_xact <= 1'b0;
-            end
+            if (r_done) r_pending <= 1'b0;
         end
     end
 
-    // ---- TL master: multi-beat burst stability.  Per-beat irrevocability
-    //      (above) covers (valid && !ready); this extends source/opcode/size
-    //      stability across the full A burst of a Put transaction.
-    always @(*) if (chk && pending_xact && io_tl_a_valid) begin
-        assume (io_tl_a_bits_source == xact_source);
-        assume (io_tl_a_bits_opcode == xact_opcode);
-        assume (io_tl_a_bits_size   == xact_size);
+    // ---- WRITE engine ghost ----
+    //   The bridge captures wSource in sWIdle on a.valid (peek), not on
+    //   a.fire — the first a.fire happens later in sWData.  Mirror that
+    //   commit semantics here by capturing on first a.valid with !w_pending.
+    //
+    //   w_in_burst tracks "the master is still feeding the Put A burst" —
+    //   from the peek cycle (inclusive) through the last a.fire of the
+    //   burst.  Inside this window the master must drive Put beats matching
+    //   the snapshot; outside it, the master is free to start a different
+    //   engine's transaction (a Get or a Hint).
+    //
+    //   The window starts at the peek, NOT at the first a.fire, because the
+    //   bridge is in sWAW/sWData expecting a_valid to be held until the
+    //   first beat completes — without that the bridge would deadlock.
+    reg       w_pending;       // a Put has begun, response not yet completed
+    reg [3:0] w_xact_source;
+    reg [5:0] w_xact_size;
+    reg [2:0] w_xact_opcode;   // 0=PutFull, 1=PutPart
+    reg       w_in_burst;      // peek seen, last a.fire not yet seen
+    reg [6:0] w_a_beats_left;  // Put A beats still owed to the bridge
+    initial w_pending      = 1'b0;
+    initial w_xact_source  = 4'd0;
+    initial w_xact_size    = 6'd0;
+    initial w_xact_opcode  = 3'd0;
+    initial w_in_burst     = 1'b0;
+    initial w_a_beats_left = 7'd0;
+
+    wire w_begin = !w_pending && io_tl_a_valid && isPutA && !reset;
+    wire w_done  = w_pending && d_fire &&
+                   (io_tl_d_bits_opcode == 3'd0) /* AccessAck */;
+
+    // Beats for the current Put burst: max(1, (1<<size)/beatBytes).
+    wire [6:0] w_total_beats =
+        (((7'd1) << io_tl_a_bits_size) <= 7'd8) ? 7'd1
+                                                : ((7'd1 << io_tl_a_bits_size) >> 7'd3);
+
+    always @(posedge clock) begin
+        if (reset) begin
+            w_pending      <= 1'b0;
+            w_xact_source  <= 4'd0;
+            w_xact_size    <= 6'd0;
+            w_xact_opcode  <= 3'd0;
+            w_in_burst     <= 1'b0;
+            w_a_beats_left <= 7'd0;
+        end else begin
+            if (w_begin) begin
+                w_pending      <= 1'b1;
+                w_xact_source  <= io_tl_a_bits_source;
+                w_xact_size    <= io_tl_a_bits_size;
+                w_xact_opcode  <= io_tl_a_bits_opcode;
+                w_in_burst     <= 1'b1;
+                w_a_beats_left <= w_total_beats;
+            end else if (a_fire && isPutA && w_in_burst) begin
+                w_a_beats_left <= w_a_beats_left - 7'd1;
+                if (w_a_beats_left == 7'd1) w_in_burst <= 1'b0;
+            end
+            if (w_done) w_pending <= 1'b0;
+        end
+    end
+
+    // ---- HINT engine ghost ----
+    reg       h_pending_g;
+    reg [3:0] h_xact_source;
+    reg [5:0] h_xact_size;
+    initial h_pending_g   = 1'b0;
+    initial h_xact_source = 4'd0;
+    initial h_xact_size   = 6'd0;
+
+    wire h_begin = !h_pending_g && a_fire && isHintA;
+    wire h_done  = h_pending_g && d_fire &&
+                   (io_tl_d_bits_opcode == 3'd2) /* HintAck */;
+
+    always @(posedge clock) begin
+        if (reset) begin
+            h_pending_g   <= 1'b0;
+            h_xact_source <= 4'd0;
+            h_xact_size   <= 6'd0;
+        end else begin
+            if (h_begin) begin
+                h_pending_g   <= 1'b1;
+                h_xact_source <= io_tl_a_bits_source;
+                h_xact_size   <= io_tl_a_bits_size;
+            end
+            if (h_done) h_pending_g <= 1'b0;
+        end
     end
 
     // ======================================================================
-    // SAFETY ASSERTIONS — all gated on f_past_valid && !reset so they only
-    // fire after the design has seen a complete reset.
+    // ENVIRONMENT ASSUMPTIONS — multi-engine refinements
     // ======================================================================
 
-    wire chk = f_past_valid && !reset;
+    // ---- TL master: multi-beat Put A-burst stability.  While we are
+    //      inside a Put A burst (between first and last A.fire of the Put),
+    //      the master must drive Put beats matching the snapshotted source/
+    //      opcode/size — and only Put beats (no Get or Hint interruptions
+    //      within the same burst, per TL spec).
+    always @(*) if (chk && w_in_burst && io_tl_a_valid) begin
+        assume (io_tl_a_bits_opcode == w_xact_opcode);
+        assume (io_tl_a_bits_source == w_xact_source);
+        assume (io_tl_a_bits_size   == w_xact_size);
+    end
+
+    // ---- TL master: single-outstanding-per-engine.  Each engine has one
+    //      slot; the master may not issue a new Get while r_pending, a new
+    //      Put while w_pending, or a new Hint while h_pending_g.
+    always @(*) if (chk && r_pending && io_tl_a_valid)
+        assume (!isGetA);
+    always @(*) if (chk && w_pending && io_tl_a_valid && !w_in_burst)
+        assume (!isPutA);
+    always @(*) if (chk && h_pending_g && io_tl_a_valid)
+        assume (!isHintA);
+
+    // ======================================================================
+    // SAFETY ASSERTIONS — all gated on `chk` (f_past_valid && !reset) so
+    // they only fire after the design has seen a complete reset.
+    // ======================================================================
 
     // F6 — AW/AR burst is INCR and size is bus-width (3).
     always @(*) if (chk && io_axi_aw_valid) begin
@@ -302,10 +409,31 @@ module tluhtoaxi4_props (
     always @(*) if (chk && io_axi_ar_valid)
         assert (io_axi_ar_bits_addr[2:0] == 3'd0);
 
-    // F2 — every D beat of an in-flight transaction carries the source
-    //      snapshotted at the first A.valid of that transaction.
-    always @(*) if (chk && pending_xact && io_tl_d_valid && io_tl_d_ready)
-        assert (io_tl_d_bits_source == xact_source);
+    // F2 — every D beat carries the source snapshotted by the corresponding
+    //      engine when it accepted the transaction.  D.opcode selects which
+    //      engine's snapshot is the source-of-truth.
+    always @(*) if (chk && d_fire && r_pending &&
+                    io_tl_d_bits_opcode == 3'd1 /* AccessAckData */)
+        assert (io_tl_d_bits_source == r_xact_source);
+
+    always @(*) if (chk && d_fire && w_pending &&
+                    io_tl_d_bits_opcode == 3'd0 /* AccessAck */)
+        assert (io_tl_d_bits_source == w_xact_source);
+
+    always @(*) if (chk && d_fire && h_pending_g &&
+                    io_tl_d_bits_opcode == 3'd2 /* HintAck */)
+        assert (io_tl_d_bits_source == h_xact_source);
+
+    // F3 — every D beat's `size` matches the corresponding request's size.
+    always @(*) if (chk && d_fire && r_pending &&
+                    io_tl_d_bits_opcode == 3'd1)
+        assert (io_tl_d_bits_size == r_xact_size);
+    always @(*) if (chk && d_fire && w_pending &&
+                    io_tl_d_bits_opcode == 3'd0)
+        assert (io_tl_d_bits_size == w_xact_size);
+    always @(*) if (chk && d_fire && h_pending_g &&
+                    io_tl_d_bits_opcode == 3'd2)
+        assert (io_tl_d_bits_size == h_xact_size);
 
     // Bonus — writes / hints never set D.corrupt.
     always @(*) if (chk && io_tl_d_valid && (io_tl_d_bits_opcode == 3'd0 ||

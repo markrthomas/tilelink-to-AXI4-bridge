@@ -85,20 +85,22 @@ Actions workflow (`.github/workflows/ci.yml`), tracked in
 
 Bursts are always `INCR`. `AxSIZE` is pinned at `log2(beatBytes) = 3`;
 sub-bus writes ride a full beat with `WSTRB` selecting the active bytes.
-Only one TL transaction is in flight at a time — `source` is forwarded as
-the AXI ID so the host may issue concurrent sources, but they are
-serialised inside the bridge. Multiple-outstanding support is on the
-roadmap (PLAN.md Phase 5).
+The bridge runs three independent engines (read, write, 1-deep hint
+slot) sharing TL-A by opcode and TL-D via a fixed-priority arbiter
+(`W > R > H`) with a sticky lock for in-flight read bursts.  TL `source`
+is forwarded directly as the AXI ID, so a host may overlap a read and a
+write (and a hint) from distinct sources — peak observed concurrency in
+the regression workload is 3 transactions in flight.
 
 ## Status snapshot
 
 | Area | Status |
 |------|--------|
 | RTL | Elaborated cleanly (Chisel 7.7.0 → firtool 1.139.0) |
-| Directed sim | 9 directed jobs (aligned, sub-bus high/low, 4-beat + 2-beat bursts, partial-strb single + burst, hint, byte at unaligned offset) |
-| Random sim | 30 randomized jobs per run (seed `0xC0FFEE`) |
-| Last result | **PASS** — 47 jobs, 0 errors, 400 sim ticks |
+| Directed sim | 13 directed jobs (aligned, sub-bus high/low, 4-beat + 2-beat bursts, partial-strb single + burst, hint, byte at unaligned offset, explicit Put+Get+Hint concurrency) |
+| Random sim | 100 randomized jobs per run (seed `0xC0FFEE`, rotating sources, full op mix incl. PutPartialData) |
+| Last result | **PASS** — 121 jobs, 0 errors, 734 sim ticks, peak concurrency=3 |
 | Lint | `make lint` clean (0 warnings, 5 documented `UNUSEDSIGNAL` suppressions) |
-| Coverage | 98.9% line (90/91) — above the 80% DV_STANDARDS floor |
-| Formal | `make formal` — BMC depth 30 + 3 cover witnesses (F2 / F6 / F8 / corrupt-discipline) |
+| Coverage | 97.1% line (132/136) — above the 80% DV_STANDARDS floor |
+| Formal | `make formal` — BMC depth 30 + 3 cover witnesses (per-engine F2 / F3 / F6 / F8 / corrupt-discipline) |
 | Cocotb / GitHub Actions CI | Not implemented yet — see `doc/PLAN.md` |

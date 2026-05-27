@@ -96,6 +96,13 @@ public:
     int        respBeats = 1;
     int        respBeatIdx = 0;
 
+    // Concurrency accounting (peak = max simultaneous in-flight transactions,
+    // measured from FIRST A.fire of each transaction to LAST D.fire).
+    int outstandingGet  = 0;   // 0..1 (bridge has one read slot)
+    int outstandingPut  = 0;   // 0..1 (bridge has one write slot)
+    int outstandingHint = 0;   // 0..1 (bridge has a 1-deep hint buffer)
+    int peakConcurrency = 0;
+
     void drive(VTLUHToAXI4* dut) {
         if (!reqActive && !reqQ.empty()) {
             curReq = reqQ.front();
@@ -137,12 +144,21 @@ public:
         if (reqActive && dut->io_tl_a_valid && dut->io_tl_a_ready) {
             bool isPut = (curReq.opcode == OP_PutFull) || (curReq.opcode == OP_PutPart);
             if (isPut) {
+                if (beatIdx == 0) outstandingPut++;   // count on first beat fire
                 int beats = computeBeats(curReq.size);
                 beatIdx++;
                 if (beatIdx >= beats) reqActive = false;
+            } else if (curReq.opcode == OP_Get) {
+                outstandingGet++;
+                reqActive = false;
+            } else if (curReq.opcode == OP_Hint) {
+                outstandingHint++;
+                reqActive = false;
             } else {
                 reqActive = false;
             }
+            int now = outstandingGet + outstandingPut + outstandingHint;
+            if (now > peakConcurrency) peakConcurrency = now;
         }
         // D handshake
         if (dut->io_tl_d_valid && dut->io_tl_d_ready) {
@@ -165,6 +181,10 @@ public:
             if (respBeatIdx >= respBeats) {
                 doneResps.push_back(curResp);
                 respActive = false;
+                // Last-beat completion: decrement outstanding for this kind.
+                if (curResp.opcode == D_AccessAck      && outstandingPut  > 0) outstandingPut--;
+                else if (curResp.opcode == D_AccessAckData && outstandingGet > 0) outstandingGet--;
+                else if (curResp.opcode == D_HintAck       && outstandingHint > 0) outstandingHint--;
             }
         }
     }
@@ -414,6 +434,10 @@ int main(int argc, char** argv) {
         std::vector<uint64_t> expectData; // snapshot for Get at enqueue time
     };
     std::vector<Job> jobs;
+    // Per-source FIFO of expected job indices.  With parallel read+write+hint
+    // engines D responses may arrive out of enqueue order; matching by source
+    // is the canonical TL way to pair responses with requests.
+    std::map<int, std::deque<size_t>> jobIdxBySource;
 
     auto enqueue = [&](TLRequest req) {
         Job j;
@@ -431,6 +455,7 @@ int main(int argc, char** argv) {
         } else {
             j.expectAckData = false;
         }
+        jobIdxBySource[req.source].push_back(jobs.size());
         jobs.push_back(std::move(j));
         tl.reqQ.push_back(req);
     };
@@ -478,24 +503,54 @@ int main(int argc, char** argv) {
     enqueue(mkPutFull(0x803, 0, 14, {0x00000000000000EEULL << (8*3)}));
     enqueue(mkGet    (0x803, 0, 15));
 
-    // Randomized sweep
+    // Test 10: explicit overlap — a 4-beat Put followed by a Get with a
+    // different source. The Get fires while the Put is in sWResp waiting on
+    // B, so the two engines are concurrently in flight (peakConcurrency >=2).
+    // The Hint after that piles a third in-flight transaction onto the D-arb.
+    enqueue(mkPutFull(0xA00, 5, 0, {
+        0xA0A0A0A0A0A0A0A0ULL, 0xB1B1B1B1B1B1B1B1ULL,
+        0xC2C2C2C2C2C2C2C2ULL, 0xD3D3D3D3D3D3D3D3ULL,
+    }));
+    enqueue(mkGet    (0xB00, 3, 1));
+    enqueue(mkHint   (0xC00, 3, 2));
+    enqueue(mkGet    (0xA00, 5, 3));   // verify the burst landed
+
+    // Randomized sweep — 100 jobs with rotating sources to keep the parallel
+    // engines fed and exercise the D-arbiter under load.
     std::mt19937 rng(0xC0FFEE);
     std::uniform_int_distribution<int> sizeDist(0, 5);  // up to 32B
-    std::uniform_int_distribution<int> opDist(0, 2);    // 0=Put,1=Get,2=Hint
-    for (int t = 0; t < 30; t++) {
+    std::uniform_int_distribution<int> opDist(0, 5);    // bias toward put/get over hint
+    const int RANDOM_JOBS = 100;
+    for (int t = 0; t < RANDOM_JOBS; t++) {
         int size = sizeDist(rng);
         int bytes = 1 << size;
         uint32_t addr = (rng() & 0x0FFFu) & ~((uint32_t)bytes - 1u);
-        int src = rng() & 0xF;
+        // Rotate source IDs so adjacent jobs typically have different
+        // sources — encourages the bridge's engines to overlap.
+        int src = ((t * 7) + (rng() & 0x7)) & 0xF;
         int op = opDist(rng);
-        if (op == 0) {
+        if (op <= 1) {                       // ~2/6 → PutFull
             int beats = computeBeats(size);
             std::vector<uint64_t> data(beats);
             for (auto& d : data) d = ((uint64_t)rng() << 32) | rng();
             enqueue(mkPutFull(addr, size, src, std::move(data)));
-        } else if (op == 1) {
+        } else if (op == 2) {                // ~1/6 → PutPart
+            int beats = computeBeats(size);
+            std::vector<uint64_t> data(beats);
+            std::vector<uint8_t>  mask(beats);
+            for (int b = 0; b < beats; b++) {
+                data[b] = ((uint64_t)rng() << 32) | rng();
+                mask[b] = (uint8_t)(rng() & 0xFF);
+                if ((1 << size) < BEAT_BYTES) {
+                    int sb = 1 << size;
+                    int off = addr & BEAT_BYTES_M;
+                    mask[b] &= (uint8_t)(((1u << sb) - 1u) << off);
+                }
+            }
+            enqueue(mkPutPart(addr, size, src, std::move(data), std::move(mask)));
+        } else if (op <= 4) {                // ~2/6 → Get
             enqueue(mkGet(addr, size, src));
-        } else {
+        } else {                              // ~1/6 → Hint
             enqueue(mkHint(addr, size, src));
         }
     }
@@ -521,15 +576,24 @@ int main(int argc, char** argv) {
     }
 
     // ---------- Verify ----------
-    for (size_t i = 0; i < jobs.size() && i < tl.doneResps.size(); i++) {
-        const auto& job  = jobs[i];
-        const auto& resp = tl.doneResps[i];
+    // Match each received response to a job by source FIFO order.  This
+    // tolerates out-of-order responses across opcode types while still
+    // requiring strict per-source ordering (the bridge serializes one
+    // outstanding transaction per source via its single read/write slots).
+    for (size_t r = 0; r < tl.doneResps.size(); r++) {
+        const auto& resp = tl.doneResps[r];
+        auto it = jobIdxBySource.find(resp.source);
+        if (it == jobIdxBySource.end() || it->second.empty()) {
+            CHECK(false, "resp %zu source=%d has no pending job", r, resp.source);
+            continue;
+        }
+        size_t i = it->second.front();
+        it->second.pop_front();
+        const auto& job = jobs[i];
 
-        CHECK(resp.source == job.req.source,
-              "job %zu: source mismatch got=%d want=%d", i, resp.source, job.req.source);
         CHECK(resp.size == job.req.size,
-              "job %zu: size mismatch got=%d want=%d", i, resp.size, job.req.size);
-        CHECK(!resp.denied, "job %zu: unexpected denied", i);
+              "job %zu (source=%d): size got=%d want=%d", i, resp.source, resp.size, job.req.size);
+        CHECK(!resp.denied, "job %zu (source=%d): unexpected denied", i, resp.source);
 
         if (job.req.opcode == OP_Get) {
             CHECK(resp.opcode == D_AccessAckData,
@@ -554,6 +618,16 @@ int main(int argc, char** argv) {
                   "job %zu Hint: opcode got=%d want=HintAck(2)", i, resp.opcode);
         }
     }
+    // Every source FIFO should be empty (no orphaned expectations).
+    for (auto& kv : jobIdxBySource) {
+        CHECK(kv.second.empty(),
+              "source=%d has %zu unmatched expected response(s)",
+              kv.first, kv.second.size());
+    }
+    // Peak concurrency exit criterion (PLAN.md Phase 5).
+    CHECK(tl.peakConcurrency >= 2,
+          "peak concurrency = %d, expected >= 2 with parallel engines",
+          tl.peakConcurrency);
 
     // Compare slave memory against reference memory
     for (const auto& kv : ref.bytes) {
@@ -578,7 +652,7 @@ int main(int argc, char** argv) {
         std::printf("\n*** FAIL: %d error(s), %zu jobs ***\n", errs, jobs.size());
         return 1;
     }
-    std::printf("\n*** PASS: %zu jobs, 0 errors, %llu sim ticks ***\n",
-                jobs.size(), (unsigned long long)main_time);
+    std::printf("\n*** PASS: %zu jobs, 0 errors, %llu sim ticks, peak concurrency=%d ***\n",
+                jobs.size(), (unsigned long long)main_time, tl.peakConcurrency);
     return 0;
 }
