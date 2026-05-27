@@ -392,8 +392,9 @@ unused signals:
 
 - `io_tl_a_bits_param`, `io_tl_a_bits_corrupt` — TL fields the bridge
   doesn't propagate (documented in `doc/DESIGN_SPEC.md`)
-- `io_axi_b_bits_id`, `io_axi_r_bits_id` — bridge uses the latched
-  `regSource` rather than re-reading from AXI
+- `io_axi_b_bits_id`, `io_axi_r_bits_id` — bridge checks these with
+  assertions against the latched source, but still returns the latched TL
+  source on D
 - `regAddr[2:0]` — masked off by `regAddrAligned` (the low 3 bits go
   into WSTRB selection, not the AXI address)
 
@@ -406,18 +407,18 @@ If you remove the suppressions and re-run lint, you'll see all five.
 Try one of these as a self-driven exercise. Each is a real RTL change,
 not just a test extension.
 
-### 8.1 Add an "error response" path
+### 8.1 Add a 4KB-boundary guard
 
-Modify `AXISlave::drive()` in `tb_main.cpp` to assert `BRESP = 0b10`
-(SLVERR) on writes to address `0xBADC0DE0`. Then add a directed test
-that issues a write to that address and asserts the D response has
-`denied = 1`.
+AXI4 INCR bursts must not cross a 4KB boundary. Add an RTL assertion that
+checks the aligned `AW` / `AR` address plus burst byte count stays within
+the current 4KB page, then add a directed test near `0xFF0` that documents
+the expected behavior.
 
 What to verify:
-- `D.denied` should be `1`
-- `D.corrupt` should still be `0` for writes (we tightened that to
-  reads-only in the review pass — see DESIGN_SPEC.md "Error mapping")
-- Bridge state machine should still return cleanly to `sIdle`
+- Legal bursts still pass unchanged
+- The new assertion fires for a crossing burst in simulation/formal
+- The design spec documents whether this is an integration constraint or a
+  denied-response case
 
 ### 8.2 Add a deadlock watchdog
 
@@ -453,8 +454,8 @@ proof for some invariants.
 
 - **`doc/DESIGN_SPEC.md`** — full signal-by-signal reference. The
   authoritative protocol description.
-- **`doc/PLAN.md`** — phased roadmap. Phases 4 (formal), 5
-  (multi-outstanding), 6 (cocotb), 7 (CI) are open.
+- **`doc/PLAN.md`** — phased roadmap. The core DV milestones are complete;
+  longer-horizon items track atomics, width sweeps, and optional UVM work.
 - **Workspace `DV_STANDARDS.md`** (`../DV_STANDARDS.md`) — the shared
   conventions the sibling RTL repos follow; lists what's standard
   across the workspace.

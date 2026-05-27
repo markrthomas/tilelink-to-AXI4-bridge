@@ -19,9 +19,9 @@ source must be brought into line.
 ```
 
 The bridge is a TileLink **slave** (it sinks `A`, sources `D`) and an AXI4
-**master** (it sources `AW`/`W`/`AR`, sinks `B`/`R`). It serialises one
-TL transaction at a time end-to-end; reads and writes do not overlap inside
-the bridge even though TL would allow it via distinct `source` values.
+**master** (it sources `AW`/`W`/`AR`, sinks `B`/`R`). It has independent
+read and write engines plus a one-deep hint slot, so one read, one write,
+and one hint can be in flight at the same time.
 
 ## Parameters
 
@@ -75,7 +75,7 @@ elaborated ports in `generated/TLUHToAXI4.sv:5-24`.
 | `io_tl_d_bits_sink` | 1 | out | Tied to 0 (single-sink bridge) |
 | `io_tl_d_bits_denied` | 1 | out | `AXI ?RESP != OKAY` lifts this bit |
 | `io_tl_d_bits_data` | 64 | out | Beat payload for `AccessAckData` |
-| `io_tl_d_bits_corrupt` | 1 | out | Set on read paths when `RRESP != OKAY` |
+| `io_tl_d_bits_corrupt` | 1 | out | Set on read paths when `RRESP[1]` is set |
 
 Channel B (probe) and Channel C (release) of the full TL specification are
 **not** present — this is a TL-UH bridge.
@@ -114,7 +114,7 @@ as tied-zero outputs if the downstream subordinate requires them.
 | Signal | Width | Notes |
 |--------|-------|-------|
 | `io_axi_b_valid` / `_ready` | 1 / 1 | Coupled to `D` handshake while in `sWriteResp` |
-| `io_axi_b_bits_id` | 4 | Echoed back as `D.source` |
+| `io_axi_b_bits_id` | 4 | Must match the outstanding write source; checked by assertion |
 | `io_axi_b_bits_resp` | 2 | Non-zero → `D.denied` |
 
 ### Read address (`AR`)
@@ -128,7 +128,7 @@ master recovers byte position from its own `a_address[beatSizeLg-1:0]`.
 | Signal | Width | Notes |
 |--------|-------|-------|
 | `io_axi_r_valid` / `_ready` | 1 / 1 | Forwarded beat-for-beat to `D` |
-| `io_axi_r_bits_id` | 4 | Not forwarded; bridge uses latched `source` instead |
+| `io_axi_r_bits_id` | 4 | Must match the outstanding read source; checked by assertion |
 | `io_axi_r_bits_data` | 64 | = `D.data` |
 | `io_axi_r_bits_resp` | 2 | Non-zero → `D.denied`; bit 1 set (`SLVERR`/`DECERR`) → `D.corrupt` (so `EXOKAY` only raises `denied`) |
 | `io_axi_r_bits_last` | 1 | Marks the final read beat (bridge returns to `sIdle`) |
@@ -141,8 +141,8 @@ master recovers byte position from its own `a_address[beatSizeLg-1:0]`.
 | `PutFullData` (0) | `AW` + `W` | `AccessAck` | Full mask expected from master |
 | `PutPartialData` (1) | `AW` + `W` (`mask → WSTRB`) | `AccessAck` | Any mask subset OK |
 | `Hint` (5) | *(none)* | `HintAck` | Bridge handles locally; no AXI activity |
-| `ArithmeticData` (2) | *(none)* | — | **Unsupported.** Master must not issue. |
-| `LogicalData` (3) | *(none)* | — | **Unsupported.** Master must not issue. |
+| `ArithmeticData` (2) | *(none)* | `AccessAck`, `denied=1` | Unsupported; consumed locally to avoid wedging A. |
+| `LogicalData` (3) | *(none)* | `AccessAck`, `denied=1` | Unsupported; consumed locally to avoid wedging A. |
 
 The string constants are defined in `TLOpcode`
 (`src/main/scala/tlbridge/Bundles.scala:96`) and applied by the FSM
@@ -233,10 +233,11 @@ burst is never interrupted by a subsequently-arriving B or hint.
   in flight simultaneously, and two writes cannot.  A read + a write
   + a hint *can*.  Multi-source-per-engine parallelism (e.g. two
   outstanding reads) would need a per-source ID table.
-- **No atomics.** `ArithmeticData` / `LogicalData` are not decoded; the
-  FSM stays in `sIdle` and the master would hang. Future work
-  (`doc/PLAN.md` mid-term) maps these to AXI read-modify-write or
-  exclusive accesses.
+- **No atomics.** `ArithmeticData` / `LogicalData` are not implemented as
+  read-modify-write operations. They are consumed by a one-deep local error
+  slot and answered with denied `AccessAck` so an unsupported request does
+  not wedge the TL-A channel. Future work (`doc/PLAN.md` longer horizon)
+  maps these to AXI read-modify-write or exclusive accesses.
 - **`AxSIZE` tied to bus width.** Sub-bus writes use `WSTRB` to select
   the active bytes. A downstream subordinate that depends on `AxSIZE`
   for narrow-transfer behavior may need a wrapper.
@@ -266,16 +267,19 @@ The TB in `test/cpp/tb_main.cpp` runs:
 | Directed: `Hint` → `HintAck` | `0x700` |
 | Directed: byte (size=0) at unaligned offset | `0x803` |
 | Directed: explicit concurrency | 4-beat Put + Get + Hint with distinct sources at `0xA00`/`0xB00`/`0xC00` |
+| Directed: maximum supported burst | 64 B / 8-beat Put + Get at `0xE00` |
+| Directed: error handling | AXI `BRESP=DECERR`, AXI `RRESP=SLVERR`, unsupported TL opcode, illegal size |
 | Randomized | 100 jobs with `std::mt19937(0xC0FFEE)`, rotating sources, op mix Put/Get/Hint incl. `PutPartialData` with random masks |
 
 Self-check: each `D` response is matched to a request via a per-source
 FIFO (so out-of-order completion is tolerated); for `Get`, the per-beat
 data is compared against a snapshot of the reference model taken at
 enqueue time; finally the AXI slave's memory is compared against the
-reference.  The TB also live-tracks `outstandingGet + outstandingPut +
+reference. The AXI model injects deterministic channel backpressure plus
+directed non-OKAY responses. The TB also live-tracks `outstandingGet + outstandingPut +
 outstandingHint` and asserts the peak floor of ≥ 2.  Last recorded
 result on `main`:
-`*** PASS: 121 jobs, 0 errors, 734 sim ticks, peak concurrency=3 ***`.
+`*** PASS: 127 jobs, 0 errors, 864 sim ticks, peak concurrency=3 ***`.
 
 A SymbiYosys formal proof at `verification/formal/` covers per-engine
 F2 (source preservation), F3 (size preservation), F6 (`AxBURST`/`AxSIZE`),

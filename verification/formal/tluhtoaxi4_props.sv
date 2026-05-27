@@ -388,6 +388,13 @@ module tluhtoaxi4_props (
     always @(*) if (chk && h_pending_g && io_tl_a_valid)
         assume (!isHintA);
 
+    // ---- AXI subordinate: response IDs match the single outstanding
+    //      transaction on the corresponding channel.
+    always @(*) if (chk && w_pending && io_axi_b_valid)
+        assume (io_axi_b_bits_id == w_xact_source);
+    always @(*) if (chk && r_pending && io_axi_r_valid)
+        assume (io_axi_r_bits_id == r_xact_source);
+
     // ======================================================================
     // SAFETY ASSERTIONS — all gated on `chk` (f_past_valid && !reset) so
     // they only fire after the design has seen a complete reset.

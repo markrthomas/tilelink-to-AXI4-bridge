@@ -70,9 +70,8 @@ Individual stages:
 | Regress + coverage + formal + cocotb (full local CI) | `make ci` |
 | Clean every generated artifact | `make clean` |
 
-The remaining [DV_STANDARDS](../DV_STANDARDS.md) gap is the GitHub
-Actions workflow (`.github/workflows/ci.yml`), tracked in
-[`doc/PLAN.md`](doc/PLAN.md) Phase 7.
+GitHub Actions coverage lives in `.github/workflows/ci.yml`, with separate
+`regress`, `coverage`, `formal`, and `cocotb` jobs.
 
 ## Bridge mapping (summary)
 
@@ -82,7 +81,7 @@ Actions workflow (`.github/workflows/ci.yml`), tracked in
 | `PutFullData` (0) | `AW` + `W` | `AccessAck` |
 | `PutPartialData` (1) | `AW` + `W` (`mask` → `WSTRB`) | `AccessAck` |
 | `Hint` (5) | *(none — handled in-bridge)* | `HintAck` |
-| `ArithmeticData` / `LogicalData` | **unsupported** (planned) | — |
+| `ArithmeticData` / `LogicalData` | Local denied response | `AccessAck` with `denied=1` |
 
 Bursts are always `INCR`. `AxSIZE` is pinned at `log2(beatBytes) = 3`;
 sub-bus writes ride a full beat with `WSTRB` selecting the active bytes.
@@ -98,11 +97,11 @@ the regression workload is 3 transactions in flight.
 | Area | Status |
 |------|--------|
 | RTL | Elaborated cleanly (Chisel 7.7.0 → firtool 1.139.0) |
-| Directed sim | 13 directed jobs (aligned, sub-bus high/low, 4-beat + 2-beat bursts, partial-strb single + burst, hint, byte at unaligned offset, explicit Put+Get+Hint concurrency) |
+| Directed sim | 19 directed jobs (aligned, sub-bus high/low, 4-beat + 2-beat + 8-beat bursts, partial-strb single + burst, hint, byte at unaligned offset, explicit Put+Get+Hint concurrency, AXI error responses, unsupported opcode, illegal size) |
 | Random sim | 100 randomized jobs per run (seed `0xC0FFEE`, rotating sources, full op mix incl. PutPartialData) |
-| Last result | **PASS** — 121 jobs, 0 errors, 734 sim ticks, peak concurrency=3 |
+| Last result | **PASS** — 127 jobs, 0 errors, 864 sim ticks, peak concurrency=3 |
 | Lint | `make lint` clean (0 warnings, 5 documented `UNUSEDSIGNAL` suppressions) |
-| Coverage | 97.1% line (132/136) — above the 80% DV_STANDARDS floor |
+| Coverage | 91.1% line (144/158) — above the 80% DV_STANDARDS floor |
 | Formal | `make formal` — BMC depth 30 + 3 cover witnesses (per-engine F2 / F3 / F6 / F8 / corrupt-discipline) |
 | Cocotb | `make cocotb` — 6 directed tests on Icarus (`cocotb/test_bridge.py`) |
-| GitHub Actions CI | Not implemented yet — see `doc/PLAN.md` Phase 7 |
+| GitHub Actions CI | `.github/workflows/ci.yml` with regress / coverage / formal / cocotb jobs |

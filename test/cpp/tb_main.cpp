@@ -34,6 +34,7 @@ static constexpr uint8_t FULL_MASK = (uint8_t)((1u << BEAT_BYTES) - 1u);
 // TL A opcodes
 static constexpr int OP_PutFull = 0;
 static constexpr int OP_PutPart = 1;
+static constexpr int OP_Arithmetic = 2;
 static constexpr int OP_Get     = 4;
 static constexpr int OP_Hint    = 5;
 // TL D opcodes
@@ -136,22 +137,24 @@ public:
             dut->io_tl_a_bits_mask    = 0;
             dut->io_tl_a_bits_corrupt = 0;
         }
-        dut->io_tl_d_ready = 1; // always accept
+        int cyc = (int)(main_time >> 1);
+        dut->io_tl_d_ready = (cyc % 9 == 4) ? 0 : 1;
     }
 
     void sample(VTLUHToAXI4* dut) {
         // A handshake
         if (reqActive && dut->io_tl_a_valid && dut->io_tl_a_ready) {
             bool isPut = (curReq.opcode == OP_PutFull) || (curReq.opcode == OP_PutPart);
-            if (isPut) {
+            bool legalSize = curReq.size <= 6;
+            if (isPut && legalSize) {
                 if (beatIdx == 0) outstandingPut++;   // count on first beat fire
                 int beats = computeBeats(curReq.size);
                 beatIdx++;
                 if (beatIdx >= beats) reqActive = false;
-            } else if (curReq.opcode == OP_Get) {
+            } else if (curReq.opcode == OP_Get && legalSize) {
                 outstandingGet++;
                 reqActive = false;
-            } else if (curReq.opcode == OP_Hint) {
+            } else if (curReq.opcode == OP_Hint && legalSize) {
                 outstandingHint++;
                 reqActive = false;
             } else {
@@ -205,6 +208,7 @@ public:
 
     bool bPending = false;
     int  bId      = 0;
+    int  bResp    = 0;
 
     // AR/R
     bool     arActive  = false;
@@ -215,14 +219,15 @@ public:
     int      rBeats    = 0;
 
     void drive(VTLUHToAXI4* dut) {
-        dut->io_axi_aw_ready = (!awCaptured && !bPending) ? 1 : 0;
-        dut->io_axi_w_ready  = (awCaptured) ? 1 : 0;
+        int cyc = (int)(main_time >> 1);
+        dut->io_axi_aw_ready = (!awCaptured && !bPending && (cyc % 5 != 1)) ? 1 : 0;
+        dut->io_axi_w_ready  = (awCaptured && (cyc % 7 != 2)) ? 1 : 0;
 
         dut->io_axi_b_valid    = bPending ? 1 : 0;
         dut->io_axi_b_bits_id  = bPending ? bId : 0;
-        dut->io_axi_b_bits_resp = 0;
+        dut->io_axi_b_bits_resp = bPending ? bResp : 0;
 
-        dut->io_axi_ar_ready = (!arActive) ? 1 : 0;
+        dut->io_axi_ar_ready = (!arActive && (cyc % 6 != 3)) ? 1 : 0;
 
         if (arActive) {
             dut->io_axi_r_valid = 1;
@@ -236,7 +241,7 @@ public:
             }
             dut->io_axi_r_bits_data  = d;
             dut->io_axi_r_bits_id    = arId;
-            dut->io_axi_r_bits_resp  = 0;
+            dut->io_axi_r_bits_resp  = ((arAddr & 0xFFFu) == 0xD00u) ? 2 : 0;
             dut->io_axi_r_bits_last  = (rBeats == arLen) ? 1 : 0;
         } else {
             dut->io_axi_r_valid     = 0;
@@ -279,6 +284,7 @@ public:
                 awCaptured = false;
                 bPending   = true;
                 bId        = awId;
+                bResp      = ((awAddr & 0xFFFu) == 0xD80u) ? 3 : 0;
             }
         }
         // B
@@ -384,6 +390,13 @@ static TLRequest mkHint(uint32_t addr, int size, int src) {
     return r;
 }
 
+static TLRequest mkUnsupported(uint32_t addr, int size, int src) {
+    TLRequest r;
+    r.opcode = OP_Arithmetic;
+    r.size = size; r.source = src; r.address = addr;
+    return r;
+}
+
 // ---------------- Main ----------------
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
@@ -431,6 +444,9 @@ int main(int argc, char** argv) {
     struct Job {
         TLRequest req;
         bool expectAckData;
+        int  expectOpcode;
+        bool expectDenied;
+        bool expectCorrupt;
         std::vector<uint64_t> expectData; // snapshot for Get at enqueue time
     };
     std::vector<Job> jobs;
@@ -439,21 +455,35 @@ int main(int argc, char** argv) {
     // is the canonical TL way to pair responses with requests.
     std::map<int, std::deque<size_t>> jobIdxBySource;
 
-    auto enqueue = [&](TLRequest req) {
+    auto enqueue = [&](TLRequest req, bool expectDenied = false, bool expectCorrupt = false,
+                       bool expectLocalError = false) {
         Job j;
         j.req = req;
-        if (req.opcode == OP_PutFull || req.opcode == OP_PutPart) {
+        j.expectDenied = expectDenied;
+        j.expectCorrupt = expectCorrupt;
+        if (expectLocalError) {
+            j.expectAckData = false;
+            j.expectOpcode = D_AccessAck;
+            j.expectDenied = true;
+        } else if (req.opcode == OP_PutFull || req.opcode == OP_PutPart) {
             ref.apply(req);
             j.expectAckData = false;
+            j.expectOpcode = D_AccessAck;
         } else if (req.opcode == OP_Get) {
             j.expectAckData = true;
+            j.expectOpcode = D_AccessAckData;
             int beats = computeBeats(req.size);
             j.expectData.reserve(beats);
             for (int b = 0; b < beats; b++) {
                 j.expectData.push_back(ref.beat(req.address, b));
             }
+        } else if (req.opcode == OP_Hint) {
+            j.expectAckData = false;
+            j.expectOpcode = D_HintAck;
         } else {
             j.expectAckData = false;
+            j.expectOpcode = D_AccessAck;
+            j.expectDenied = true;
         }
         jobIdxBySource[req.source].push_back(jobs.size());
         jobs.push_back(std::move(j));
@@ -514,6 +544,21 @@ int main(int argc, char** argv) {
     enqueue(mkGet    (0xB00, 3, 1));
     enqueue(mkHint   (0xC00, 3, 2));
     enqueue(mkGet    (0xA00, 5, 3));   // verify the burst landed
+
+    // Test 11: maximum supported size (64 B, 8 beats).
+    enqueue(mkPutFull(0xE00, 6, 4, {
+        0x0101010101010101ULL, 0x0202020202020202ULL,
+        0x0303030303030303ULL, 0x0404040404040404ULL,
+        0x0505050505050505ULL, 0x0606060606060606ULL,
+        0x0707070707070707ULL, 0x0808080808080808ULL,
+    }));
+    enqueue(mkGet    (0xE00, 6, 5));
+
+    // Test 12: AXI error propagation and local unsupported-opcode response.
+    enqueue(mkPutFull(0xD80, 3, 6, {0x9999999999999999ULL}), true, false);
+    enqueue(mkGet    (0xD00, 3, 7), true, true);
+    enqueue(mkUnsupported(0xF00, 3, 8), true, false);
+    enqueue(mkGet    (0xF80, 7, 9), true, false, true);
 
     // Randomized sweep — 100 jobs with rotating sources to keep the parallel
     // engines fed and exercise the D-arbiter under load.
@@ -593,11 +638,17 @@ int main(int argc, char** argv) {
 
         CHECK(resp.size == job.req.size,
               "job %zu (source=%d): size got=%d want=%d", i, resp.source, resp.size, job.req.size);
-        CHECK(!resp.denied, "job %zu (source=%d): unexpected denied", i, resp.source);
+        CHECK(resp.denied == job.expectDenied,
+              "job %zu (source=%d): denied got=%d want=%d",
+              i, resp.source, resp.denied, job.expectDenied);
+        CHECK(resp.corrupt == job.expectCorrupt,
+              "job %zu (source=%d): corrupt got=%d want=%d",
+              i, resp.source, resp.corrupt, job.expectCorrupt);
+        CHECK(resp.opcode == job.expectOpcode,
+              "job %zu (source=%d): opcode got=%d want=%d",
+              i, resp.source, resp.opcode, job.expectOpcode);
 
-        if (job.req.opcode == OP_Get) {
-            CHECK(resp.opcode == D_AccessAckData,
-                  "job %zu Get: opcode got=%d want=AccessAckData(1)", i, resp.opcode);
+        if (job.expectAckData) {
             int beats = computeBeats(job.req.size);
             CHECK((int)resp.data.size() == beats,
                   "job %zu Get: got %zu beats, want %d", i, resp.data.size(), beats);
@@ -611,11 +662,7 @@ int main(int argc, char** argv) {
                       (unsigned long)got, (unsigned long)want);
             }
         } else if (job.req.opcode == OP_PutFull || job.req.opcode == OP_PutPart) {
-            CHECK(resp.opcode == D_AccessAck,
-                  "job %zu Put: opcode got=%d want=AccessAck(0)", i, resp.opcode);
         } else if (job.req.opcode == OP_Hint) {
-            CHECK(resp.opcode == D_HintAck,
-                  "job %zu Hint: opcode got=%d want=HintAck(2)", i, resp.opcode);
         }
     }
     // Every source FIFO should be empty (no orphaned expectations).

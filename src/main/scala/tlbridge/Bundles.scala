@@ -7,20 +7,26 @@ case class BridgeParams(
   addrBits:   Int = 32,
   dataBits:   Int = 64,
   sourceBits: Int = 4,
+  idBits:     Int = 4,
   sizeBits:   Int = 6   // log2 of max single-transaction bytes
 ) {
   require(isPow2(dataBits) && dataBits >= 8, "dataBits must be power of two and >= 8")
   require(addrBits   > 0)
   require(sourceBits > 0)
+  require(idBits     >= sourceBits)
   require(sizeBits   > 0)
 
   val beatBytes:  Int = dataBits / 8
   val strbBits:   Int = beatBytes
-  val idBits:     Int = sourceBits
   val lenBits:    Int = 8
   val sizeFld:    Int = 3
   val burstBits:  Int = 2
   val respBits:   Int = 2
+  val cacheBits:  Int = 4
+  val protBits:   Int = 3
+  val lockBits:   Int = 1
+  val qosBits:    Int = 4
+  val regionBits: Int = 4
   val beatSizeLg: Int = log2Ceil(beatBytes)
 }
 
@@ -60,11 +66,16 @@ class TLSlaveIO(p: BridgeParams) extends Bundle {
 // AXI4 — bridge is the MASTER
 // ---------------------------------------------------------------------------
 class AxiAddr(p: BridgeParams) extends Bundle {
-  val id    = UInt(p.idBits.W)
-  val addr  = UInt(p.addrBits.W)
-  val len   = UInt(p.lenBits.W)
-  val size  = UInt(p.sizeFld.W)
-  val burst = UInt(p.burstBits.W)
+  val id     = UInt(p.idBits.W)
+  val addr   = UInt(p.addrBits.W)
+  val len    = UInt(p.lenBits.W)
+  val size   = UInt(p.sizeFld.W)
+  val burst  = UInt(p.burstBits.W)
+  val lock   = UInt(p.lockBits.W)
+  val cache  = UInt(p.cacheBits.W)
+  val prot   = UInt(p.protBits.W)
+  val qos    = UInt(p.qosBits.W)
+  val region = UInt(p.regionBits.W)
 }
 
 class AxiW(p: BridgeParams) extends Bundle {

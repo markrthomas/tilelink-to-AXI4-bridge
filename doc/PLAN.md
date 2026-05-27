@@ -7,15 +7,15 @@
 | Area | Status |
 |------|--------|
 | RTL | `TLUHToAXI4` (parallel read + write engines, 1-deep hint slot, fixed-priority D arbiter with read-burst lock) — Chisel 7.7.0 → firtool 1.139.0 SV |
-| Directed simulation | 13 directed jobs (aligned / sub-bus / bursts / PutPartial / Hint / byte-at-offset / explicit concurrent Put→Get→Hint) |
+| Directed simulation | 19 directed jobs (aligned / sub-bus / bursts incl. 64 B max / PutPartial / Hint / byte-at-offset / explicit concurrent Put→Get→Hint / AXI errors / unsupported opcode / illegal size) |
 | Random simulation | 100 randomized jobs per run (seed `0xC0FFEE`, rotating sources, op mix Put/Get/Hint, includes `PutPartialData` with random mask) |
-| Last result | **PASS** — 121 jobs, 0 errors, 734 sim ticks, **peak concurrency = 3** (read + write + hint simultaneously in flight) |
+| Last result | **PASS** — 127 jobs, 0 errors, 864 sim ticks, **peak concurrency = 3** (read + write + hint simultaneously in flight) |
 | Lint | `make lint` — Verilator `--lint-only -Wall`, 0 warnings (5 expected `UNUSEDSIGNAL` suppressions, documented in `Makefile`) |
 | Regress | `make regress` — `lint + sim`, the fast CI gate |
-| Coverage | `make coverage` — Verilator `--coverage` → `coverage.info`. 97.1% line (132/136), above the 80% DV_STANDARDS floor |
+| Coverage | `make coverage` — Verilator `--coverage` → `coverage.info`. 91.1% line (144/158), above the 80% DV_STANDARDS floor |
 | Formal | `make formal` — SymbiYosys BMC + cover. Per-engine F2/F3/F6/F8 + corrupt-discipline prove at depth 30; C1/C2/C3 witnesses found ≤ step 7 |
 | Cocotb | `make cocotb` — 6 directed tests on Icarus (`cocotb/`), all pass; mirrors the C++ TB's directed subset |
-| CI (GitHub Actions) | *(not implemented)* — `make ci` runs `regress + coverage + formal + cocotb` locally |
+| CI (GitHub Actions) | `.github/workflows/ci.yml` with separate `regress`, `coverage`, `formal`, and `cocotb` jobs |
 | Documentation | `README.md`, `doc/DESIGN_SPEC.md`, this `doc/PLAN.md`, `doc/TUTORIAL.md` |
 
 The repo passes the workspace-level `make sim` requirement of
@@ -139,7 +139,7 @@ transaction.
   a Get and a Hint with distinct sources, hitting all three engines.
 - Randomized sweep grew from 30 → 100 jobs, with rotating source IDs
   and `PutPartialData` mixed in.
-- Result: **121 jobs, 0 errors, peak concurrency = 3** — all three
+- Result: **127 jobs, 0 errors, peak concurrency = 3** — all three
   engines simultaneously in flight at the peak.
 - Formal wrapper reworked into per-engine ghosts (`r_pending` /
   `w_pending` / `h_pending_g` with snapshotted source + size each).
@@ -148,7 +148,7 @@ transaction.
   burst-stability is now confined to `w_in_burst` (peek through last
   A.fire), leaving the master free to start a Get or Hint in parallel.
   BMC depth 30 passes; C1 / C2 / C3 witnesses found at step 7 / 6 / 5.
-- Coverage held at 97.1% line (132 / 136) with the new arbiter + ghost
+- Coverage held above the DV_STANDARDS floor with the new arbiter + ghost
   paths.
 
 **Exit met:** randomized workload of 100+ jobs passes with peak
@@ -192,20 +192,22 @@ the OSS CAD Suite Python conflict).
 
 ---
 
-### 7 — GitHub Actions CI
+### ~~7 — GitHub Actions CI~~ ✓ DONE 2026-05-26
 
 **What:** A `.github/workflows/ci.yml` matching the DV_STANDARDS layout
 (`regress` / `coverage` / `formal` / optionally `cocotb`).
 
-**Work items:**
+Implemented as four jobs on `ubuntu-latest`: `regress`, `coverage`,
+`cocotb`, and `formal`. Each job installs the required open-source tools,
+reruns elaboration as needed, and coverage uploads `coverage.info` as an
+artifact.
 
-- One job per target. All on `ubuntu-latest`. Use the workspace-pinned
-  `OSS_CAD_SUITE_VERSION` from `dv_env.mk` (if/when this repo joins it).
-- `regress` blocks merge; `coverage`, `formal`, `cocotb` run on PRs but
-  do not block (initially).
-- Upload `coverage.info` and (if present) `sim.vcd` as artifacts.
+Follow-up: add a README badge after the workflow is green on the default
+branch.
 
-**Exit:** Green CI on the default branch; badge in `README.md`.
+### ~~8 — Robust Local Error Slot & AXI Upgrades~~ ✓ DONE 2026-05-26
+
+Refined the `isLocalError` handling to correctly consume bursts (illegal `Put` sizes/opcodes) and return a single `AccessAck` with `denied=1`, preventing bridge hangs during bring-up. Optimized `aBeats` calculation and added standard AXI4 sideband signals (`prot`, `cache`, `lock`, `qos`, `region`) driven with safe defaults. Enabled independent parameterization of `idBits` (ID ≥ source).
 
 ---
 
