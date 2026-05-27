@@ -4,7 +4,8 @@
 #   make regress     — lint + sim (DV_STANDARDS fast CI gate)
 #   make coverage    — Verilator --coverage build + coverage.info
 #   make formal      — SymbiYosys BMC + cover (verification/formal/)
-#   make ci          — regress + coverage + formal
+#   make cocotb      — cocotb directed tests on Icarus (cocotb/)
+#   make ci          — regress + coverage + formal + cocotb
 #   make elab        — Chisel -> SystemVerilog into generated/
 #   make build       — Verilator TB build (no run)
 #   make clean       — wipe every generated artifact
@@ -61,7 +62,7 @@ COV_FLAGS := \
     -Mdir $(COV_DIR) \
     -CFLAGS "-std=c++17 -O2"
 
-.PHONY: all elab build sim run lint regress coverage cov-report formal ci clean
+.PHONY: all elab build sim run lint regress coverage cov-report formal cocotb ci clean
 
 all: sim
 
@@ -103,8 +104,12 @@ cov-report: coverage
 formal:
 	$(MAKE) -C verification/formal all
 
-ci: regress coverage formal
+cocotb: $(SV)
+	$(MAKE) -C cocotb
+
+ci: regress coverage formal cocotb
 
 clean:
 	rm -rf $(GEN_DIR) $(BUILD_DIR) $(COV_DIR) sim.vcd $(COV_INFO) coverage_html target project/target project/project
 	$(MAKE) -C verification/formal clean
+	rm -rf cocotb/sim_build cocotb/__pycache__ cocotb/results.xml cocotb/*.vcd

@@ -14,8 +14,8 @@
 | Regress | `make regress` — `lint + sim`, the fast CI gate |
 | Coverage | `make coverage` — Verilator `--coverage` → `coverage.info`. 97.1% line (132/136), above the 80% DV_STANDARDS floor |
 | Formal | `make formal` — SymbiYosys BMC + cover. Per-engine F2/F3/F6/F8 + corrupt-discipline prove at depth 30; C1/C2/C3 witnesses found ≤ step 7 |
-| Cocotb | *(not implemented)* |
-| CI (GitHub Actions) | *(not implemented)* — `make ci` runs `regress + coverage + formal` locally |
+| Cocotb | `make cocotb` — 6 directed tests on Icarus (`cocotb/`), all pass; mirrors the C++ TB's directed subset |
+| CI (GitHub Actions) | *(not implemented)* — `make ci` runs `regress + coverage + formal + cocotb` locally |
 | Documentation | `README.md`, `doc/DESIGN_SPEC.md`, this `doc/PLAN.md`, `doc/TUTORIAL.md` |
 
 The repo passes the workspace-level `make sim` requirement of
@@ -156,27 +156,39 @@ concurrency = 3 (specification was ≥ 2).
 
 ---
 
-### 6 — Cocotb TB (parallel verification env)
+### ~~6 — Cocotb TB (parallel verification env)~~ ✓ DONE 2026-05-26
 
-**What:** A second TB in cocotb gives an independent check of the same
-RTL and lines up with the sibling repos
-(`IP-axi-to-2apbs/cocotb/`, `chi-to-bow-bridge/uvm/cocotb_bench/`).
+Added a self-contained cocotb env at `cocotb/` with a hand-rolled TL
+master driver and AXI4 subordinate model (no external BFM dependency).
+The Makefile uses `SIM=icarus` and follows the same env-isolation pattern
+as `IP-axi-to-2apbs/cocotb/` so the GPI module loads the system Python
+that has cocotb on PYTHONPATH (not OSS CAD Suite's bundled interpreter).
 
-**Work items:**
+| File | Purpose |
+|------|---------|
+| `cocotb/Makefile` | cocotb-config wrapper, points at `generated/TLUHToAXI4.sv` |
+| `cocotb/env.py` | `TLMaster`, `AxiSlave`, `reset_dut`, opcode constants |
+| `cocotb/test_bridge.py` | 6 directed tests mirroring the C++ TB's directed jobs |
 
-- New `cocotb/` directory at repo root with `Makefile` invoking
-  `make SIM=verilator` and `VERILOG_SOURCES=../generated/TLUHToAXI4.sv`.
-- Use `cocotb-bus` AXI4 BFM on the AXI side; write a small TL driver
-  on the host side (no public TL-UH BFM exists in cocotb — write one).
-- Mirror the directed jobs from `test/cpp/tb_main.cpp` so the two TBs
-  are checking the same surface.
-- **Toolchain note:** prior cocotb work in this workspace required
-  `ICARUS_BIN_DIR=/usr/bin` to avoid OSS CAD Suite's bundled Python
-  picking up the wrong interpreter. With Verilator, that issue may not
-  apply — confirm before assuming.
+Tests:
 
-**Exit:** `make cocotb` green; both TBs invoked from `make regress`
-(slow-gate variant) or a separate `make regress-full`.
+* `test_aligned_put_get`  — 64-bit aligned write + read
+* `test_sub_bus_halves`   — 32-bit writes at low + high halves of an 8 B beat
+* `test_4beat_burst`      — 32 B / 4-beat burst at `0x400`
+* `test_2beat_partial`    — `PutPartialData` burst with per-beat WSTRB
+* `test_hint`             — Hint → HintAck
+* `test_byte_at_offset`   — single byte at offset 3 of a beat
+
+All 6 pass under Icarus.  Result hooked up via top-level `make cocotb`
+target and included in `make ci`.
+
+Future cocotb work: expand to interleaved concurrent tests (Put+Get+Hint
+in flight simultaneously) mirroring the C++ TB's `Test 10` and 100-job
+randomized sweep.  Not on the critical path for parity with sibling
+repos; defer until the cocotb env has proven stable.  Note: SIM=verilator
+was considered but Icarus was chosen for parity with the sibling repos
+(same toolchain quirks, same `ICARUS_BIN_DIR=/usr/bin` workaround for
+the OSS CAD Suite Python conflict).
 
 ---
 

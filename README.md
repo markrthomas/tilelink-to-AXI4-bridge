@@ -66,7 +66,8 @@ Individual stages:
 | Coverage build + `coverage.info` | `make coverage` |
 | HTML coverage report (requires `lcov`) | `make cov-report` |
 | SymbiYosys BMC + cover | `make formal` |
-| Regress + coverage + formal (full local CI) | `make ci` |
+| cocotb directed tests (Icarus) | `make cocotb` |
+| Regress + coverage + formal + cocotb (full local CI) | `make ci` |
 | Clean every generated artifact | `make clean` |
 
 The remaining [DV_STANDARDS](../DV_STANDARDS.md) gap is the GitHub
@@ -103,4 +104,5 @@ the regression workload is 3 transactions in flight.
 | Lint | `make lint` clean (0 warnings, 5 documented `UNUSEDSIGNAL` suppressions) |
 | Coverage | 97.1% line (132/136) — above the 80% DV_STANDARDS floor |
 | Formal | `make formal` — BMC depth 30 + 3 cover witnesses (per-engine F2 / F3 / F6 / F8 / corrupt-discipline) |
-| Cocotb / GitHub Actions CI | Not implemented yet — see `doc/PLAN.md` |
+| Cocotb | `make cocotb` — 6 directed tests on Icarus (`cocotb/test_bridge.py`) |
+| GitHub Actions CI | Not implemented yet — see `doc/PLAN.md` Phase 7 |
