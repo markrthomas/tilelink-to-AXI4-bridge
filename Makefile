@@ -22,6 +22,8 @@ SV        := $(GEN_DIR)/TLUHToAXI4.sv
 # $(GEN_DIR)/decoder/.  Lint-only validation today; full TB is a follow-up.
 DECODER_DIR := $(GEN_DIR)/decoder
 DECODER_SV  := $(DECODER_DIR)/TLUHToAXI4Decoder.sv $(DECODER_DIR)/TLUHToAXI4.sv
+WIDTHS      := 32 64 128 256
+WIDTH_DIR   := $(GEN_DIR)/widths
 
 SBT       := sbt
 VERILATOR := verilator
@@ -70,7 +72,7 @@ COV_FLAGS := \
     -Mdir $(COV_DIR) \
     -CFLAGS "-std=c++17 -O2"
 
-.PHONY: all elab build sim run lint lint-decoder regress coverage cov-report formal cocotb wave wave-formal wave-bmc ci clean
+.PHONY: all elab elab-widths build sim run lint lint-decoder lint-widths regress coverage cov-report formal cocotb wave wave-formal wave-bmc ci clean
 
 # ---- Waveform viewer ----
 # Override on the command line, e.g. `make wave WAVE_VIEWER=surfer`.
@@ -84,6 +86,9 @@ all: sim
 
 elab $(SV) $(DECODER_SV):
 	$(SBT) -batch "runMain tlbridge.Main"
+
+elab-widths:
+	$(SBT) -batch "runMain tlbridge.WidthSweep"
 
 build $(SIM_EXE): $(SV) $(TB_SRC)
 	$(VERILATOR) $(VERILATOR_FLAGS) -o VTLUHToAXI4 $(SV) $(TB_SRC)
@@ -103,7 +108,16 @@ lint-decoder: $(DECODER_SV)
 	    --top-module TLUHToAXI4Decoder $(DECODER_SV)
 	@echo "lint-decoder: 0 warnings"
 
-regress: lint lint-decoder sim
+lint-widths: elab-widths
+	@set -euo pipefail; \
+	for width in $(WIDTHS); do \
+	    sv="$(WIDTH_DIR)/w$$width/TLUHToAXI4.sv"; \
+	    echo "lint-widths: dataBits=$$width"; \
+	    $(VERILATOR) $(LINT_FLAGS) "$$sv"; \
+	done
+	@echo "lint-widths: 0 warnings for dataBits=$(WIDTHS)"
+
+regress: lint lint-decoder lint-widths sim
 
 # --------- Waveforms ---------
 # `wave` runs the sim (refreshing sim.vcd if anything changed) and pops up

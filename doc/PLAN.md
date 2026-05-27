@@ -11,7 +11,8 @@
 | Random simulation | 100 Put/Get/Hint + 24 atomic-init pairs (`0x4000+`) per run (seed `0xC0FFEE`, rotating sources, op mix Put/Get/Hint/Arith/Logic with `PutPartialData` masks) |
 | Last result | **PASS** — 183 jobs, 0 errors, 1442 sim ticks, **peak concurrency = 3** |
 | Lint | `make lint` — Verilator `--lint-only -Wall`, 0 warnings (5 expected `UNUSEDSIGNAL` suppressions, documented in `Makefile`) |
-| Regress | `make regress` — `lint + sim`, the fast CI gate |
+| Width sweep | `make lint-widths` — elaboration + Verilator lint for `dataBits ∈ {32, 64, 128, 256}` |
+| Regress | `make regress` — `lint + lint-decoder + lint-widths + sim`, the fast CI gate |
 | Coverage | `make coverage` — Verilator `--coverage` → `coverage.info`. 95.1% line (232/244), above the 80% DV_STANDARDS floor |
 | Formal | `make formal` — SymbiYosys BMC + cover. Per-engine F2/F3 (incl. atomic), F6/F8, F-LOCK + corrupt-discipline prove at depth 30; C1/C2/C3/C4 witnesses found ≤ step 7 |
 | Cocotb | `make cocotb` — 9 directed tests on Icarus (`cocotb/`), all pass; mirrors the C++ TB's directed subset incl. atomics |
@@ -250,7 +251,7 @@ at BMC depth 30 / cocotb 9 PASS.
 |-------|-----|
 | ~~TL-C evaluation~~ ✓ DONE 2026-05-27 — decision: stay on TL-UH.  See [`doc/TLC_EVALUATION.md`](TLC_EVALUATION.md) for the reasoning and triggers to revisit (ACE/ACE-Lite, probe-back consumers, coherent host interconnect). |
 | ~~Address-decode bridge variant~~ ✓ DONE 2026-05-27 (structural) — new `TLUHToAXI4Decoder` module in `src/main/scala/tlbridge/TLUHToAXI4Decoder.scala`, parameterized by a `Seq[DecodeRegion]`.  Fans TL-A out by address; merges TL-D back via priority arbiter with a sticky lock for multi-beat AccessAckData bursts.  Emitted to `generated/decoder/` (separate dir so firtool's child-module pruning doesn't overwrite the standalone bridge).  `make lint-decoder` is part of the regress gate.  **Follow-up:** dedicated multi-port TB and formal extension (per-source ordering across regions is currently the master's responsibility — see scaladoc). |
-| Parameterized data widths | Validate elaboration and verification at `dataBits ∈ {32, 64, 128, 256}`. |
+| ~~Parameterized data widths~~ ✓ DONE 2026-05-27 — added `tlbridge.WidthSweep` and `make lint-widths`, which elaborates and Verilator-lints standalone bridge variants at `dataBits ∈ {32, 64, 128, 256}`. This is wired into `make regress` / CI. The self-checking C++ and cocotb benches remain 64-bit-specialized; making them width-generic is a possible future DV expansion rather than a parameterization blocker. |
 | ~~ASSERTIONS.md~~ ✓ DONE 2026-05-27 — single catalog at `doc/ASSERTIONS.md` enumerating formal assertions, env assumptions, cover goals, scoreboard checks, lint, and cocotb tests. |
 | ~~Atomic-engine formal~~ ✓ DONE 2026-05-27 — atomic ghost (`a_pending` / `a_xact_source` / `a_xact_size`), per-engine F2/F3 over read-vs-atomic disambiguated by `r_fire`, F-LOCK structural assertion, C4 cover witness, cross-engine source-uniqueness assumption.  Found a latent bridge bug in the process: `dSelR` published `tl.d.valid = 1'b1` even when no fresh AXI R was backing the beat — fixed in the bridge (now gated on `io.axi.r.valid`). |
 | UVM environment | If/when the workspace standardizes on UVM CI, add a `uvm/` env mirroring `IP-axi-to-2apbs/uvm/`. |

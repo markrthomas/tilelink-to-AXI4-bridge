@@ -40,6 +40,10 @@ elaborated SV and the testbench:
 
 Generation uses `circt.stage.ChiselStage` via
 `src/main/scala/tlbridge/Main.scala` and emits to `generated/`.
+`make lint-widths` also elaborates and Verilator-lints the standalone
+bridge at `dataBits ∈ {32, 64, 128, 256}` under `generated/widths/`.
+The self-checking C++ and cocotb testbenches remain specialized to the
+default 64-bit datapath.
 
 ## TileLink-UH interface
 

@@ -2,9 +2,8 @@ package tlbridge
 
 import circt.stage.ChiselStage
 
-object Main extends App {
-  val outDir = "generated"
-  val firtoolArgs = Array(
+object EmitConfig {
+  val firtoolArgs: Array[String] = Array(
     "-disable-all-randomization",
     "-strip-debug-info",
     // Yosys' SystemVerilog frontend rejects `automatic logic` declarations
@@ -12,13 +11,17 @@ object Main extends App {
     // module-level wires. Keeps the emitted SV consumable by SymbiYosys.
     "--lowering-options=disallowLocalVariables",
   )
+}
+
+object Main extends App {
+  val outDir = "generated"
 
   // Single-port bridge — the primary output, consumed by tb_main.cpp,
   // SymbiYosys, cocotb, and the CI pipeline.
   ChiselStage.emitSystemVerilogFile(
     new TLUHToAXI4(BridgeParams()),
     Array("--target-dir", outDir),
-    firtoolArgs,
+    EmitConfig.firtoolArgs,
   )
 
   // Address-decoded variant — sample 2-region split at the 2 GiB
@@ -36,8 +39,21 @@ object Main extends App {
   ChiselStage.emitSystemVerilogFile(
     new TLUHToAXI4Decoder(BridgeParams(), sampleRegions),
     Array("--target-dir", decoderOutDir),
-    firtoolArgs,
+    EmitConfig.firtoolArgs,
   )
 
   println(s"Wrote SystemVerilog to $outDir/ and $decoderOutDir/")
+}
+
+object WidthSweep extends App {
+  val widths = Seq(32, 64, 128, 256)
+  widths.foreach { dataBits =>
+    val outDir = s"generated/widths/w$dataBits"
+    ChiselStage.emitSystemVerilogFile(
+      new TLUHToAXI4(BridgeParams(dataBits = dataBits)),
+      Array("--target-dir", outDir),
+      EmitConfig.firtoolArgs,
+    )
+  }
+  println(s"Wrote width-sweep SystemVerilog for dataBits=${widths.mkString(",")}")
 }
