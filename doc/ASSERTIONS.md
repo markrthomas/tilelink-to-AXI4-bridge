@@ -1,6 +1,6 @@
 # Assertions & Properties — tilelink_to_AXI4
 
-**As of:** 2026-05-27
+**As of:** 2026-05-27 (atomic ghost added)
 
 Single catalog of every property used to validate this bridge: formal
 assertions, formal environment assumptions, cover goals, and
@@ -9,7 +9,8 @@ adding new properties so you don't duplicate, and when triaging a failure
 so you can quickly find where a claim is made.
 
 The bridge has four execution engines (read, write, hint, atomic).  Most
-properties are stated per-engine.
+properties are stated per-engine.  Atomic-engine coverage in the formal
+wrapper is **on parity with read/write/hint** — see §1 and §2 below.
 
 ---
 
@@ -21,28 +22,35 @@ design has seen a full reset pulse.  Defined in
 
 | ID | Property | Location | Engines |
 |----|----------|----------|---------|
-| F2 | `D.source == ghost.xact_source` snapshotted by the corresponding engine when it accepted the transaction | `tluhtoaxi4_props.sv:422-432` | Read, Write, Hint |
-| F3 | `D.size == ghost.xact_size` snapshotted at admission | `tluhtoaxi4_props.sv:435-443` | Read, Write, Hint |
+| F2 | `D.source == ghost.xact_source` snapshotted by the corresponding engine when it accepted the transaction | `tluhtoaxi4_props.sv:507-521` | Read, Write, Hint, Atomic |
+| F3 | `D.size == ghost.xact_size` snapshotted at admission | `tluhtoaxi4_props.sv:524-535` | Read, Write, Hint, Atomic |
 | F6 | `AW.burst == AR.burst == INCR (01)` and `AW.size == AR.size == 3` (log2(beatBytes)) | `tluhtoaxi4_props.sv:404-411` | AXI side |
 | F8 | `AW.addr[2:0] == AR.addr[2:0] == 0` (beatBytes alignment) | `tluhtoaxi4_props.sv:414-417` | AXI side |
-| —  | `D.corrupt == 0` for `AccessAck` and `HintAck` (corrupt is only meaningful for read data) | `tluhtoaxi4_props.sv:446-448` | Write, Hint |
+| F-LOCK | `AW.lock == 1` iff atomic engine is driving AW; `AR.lock == 1` iff atomic engine is driving AR. Structural check that no other engine accidentally raises lock | `tluhtoaxi4_props.sv:540-547` | All |
+| —  | `D.corrupt == 0` for `AccessAck` and `HintAck` (corrupt is only meaningful for read data) | `tluhtoaxi4_props.sv:550-552` | Write, Hint |
 
 **Result:** all pass at BMC depth 30 (`make formal`).
 
+**Read-vs-atomic disambiguation.** Both engines produce `D.opcode = AccessAckData`,
+so the wrapper distinguishes them by whether AXI R fires concurrently
+with D: the read engine ties `r.ready := tl.d.ready` in `dSelR`, so
+read's `d_fire` always coincides with `r_fire`; atomic captures R earlier
+and emits D from `aOldData`, so atomic's `d_fire` has `r_fire == 0`.
+
 ### Deferred properties
 
-These were on the original wishlist but require multi-outstanding ghost
-tracking and remain open:
+These were on the original wishlist and remain open:
 
 | ID | Property | Why deferred |
 |----|----------|--------------|
 | F1 | Number of AXI bursts conserves with number of TL transactions per engine | Needs counters across the BMC window; the bounded-step proof would be brittle |
-| F4 | AXI ID-vs-source consistency under concurrent traffic | Currently enforced by environment assumption (`b.id == w_xact_source`, `r.id == r_xact_source`) rather than asserted — the bridge's source→ID pad is structurally trivial so this is captured by F2 |
-| F5 | TL response opcode matches request opcode (Get → AccessAckData, Put → AccessAck, Hint → HintAck) | Implicit in the per-engine F2/F3 assertions (each gated on the matching D opcode), but a stronger D-opcode assertion is worth adding |
+| F4 | AXI ID-vs-source consistency under concurrent traffic | Currently enforced by environment assumption rather than asserted — the bridge's source→ID pad is structurally trivial and is captured by F2 |
+| F5 | TL response opcode matches request opcode | Implicit in the per-engine F2/F3 assertions (each gated on the matching D opcode), but a stronger D-opcode assertion would be cleaner |
 | F7 | WSTRB ⊆ requested mask on each W beat | Requires inspecting the in-flight A mask, not just snapshots — needs per-beat ghost |
 
-Atomic engine properties are also deferred — the existing ghost set only
-tracks read/write/hint.  See `doc/PLAN.md`'s longer-horizon list.
+Atomic-engine properties: **closed** — see F2/F3/F-LOCK above and C4
+below.  The atomic ghost (`a_pending`, `a_xact_source`, `a_xact_size`)
+mirrors the read/write/hint pattern.
 
 ---
 
@@ -50,11 +58,12 @@ tracks read/write/hint.  See `doc/PLAN.md`'s longer-horizon list.
 
 | ID | Cover goal | Location | Reached |
 |----|------------|----------|---------|
-| C1 | A write transaction completes (`D = AccessAck`, fire) | `tluhtoaxi4_props.sv:455-456` | step 7 |
-| C2 | A read transaction completes (`D = AccessAckData`, fire) | `tluhtoaxi4_props.sv:459-460` | step 6 |
-| C3 | A hint transaction completes (`D = HintAck`, fire) | `tluhtoaxi4_props.sv:463-464` | step 5 |
+| C1 | A write transaction completes (`D = AccessAck`, fire) | `tluhtoaxi4_props.sv:560-561` | step 7 |
+| C2 | A read transaction completes (`D = AccessAckData`, fire) | `tluhtoaxi4_props.sv:564-565` | step 6 |
+| C3 | A hint transaction completes (`D = HintAck`, fire) | `tluhtoaxi4_props.sv:568-569` | step 5 |
+| C4 | An atomic RMW completes (`D = AccessAckData`, no concurrent `r_fire`, source matches atomic ghost) | `tluhtoaxi4_props.sv:573-575` | step 7 |
 
-**Result:** all three witnesses found by `smtbmc` in `make formal`'s
+**Result:** all four witnesses found by `smtbmc` in `make formal`'s
 `cover` task.
 
 ---
@@ -72,11 +81,13 @@ starts feeling suspicious.
 | ID | Assumption | Location | Rationale |
 |----|-----------|----------|-----------|
 | TL-A0 | `a.valid == 0` during reset | `tluhtoaxi4_props.sv:175` | Bridge does not accept A before reset deasserted |
-| TL-A1 | `a.opcode ∈ {0, 1, 4, 5}` (PutFull, PutPart, Get, Hint) | `tluhtoaxi4_props.sv:179-183` | Atomics (2,3) intentionally excluded from formal scope; reserved (6,7) illegal per TL spec |
-| TL-A2 | `a.size ≤ 6` (max 64 B = beatBytes × maxBurst) | `tluhtoaxi4_props.sv:186-187` | sizeBits=6 envelope |
-| TL-A3 | A-channel bits stable while `valid && !ready` (irrevocability) | `tluhtoaxi4_props.sv:190-200` | TL master contract |
-| TL-A4 | While inside a Put A burst (`w_in_burst`), `a.opcode/source/size` match the snapshotted burst | `tluhtoaxi4_props.sv:375-379` | Real TL contract — burst beats share a header |
-| TL-A5 | Single-outstanding per engine: no new Get/Put/Hint while same engine has a pending transaction | `tluhtoaxi4_props.sv:384-389` | Bridge's per-engine slot is 1-deep; broader concurrency is the multi-outstanding refactor's job |
+| TL-A1 | `a.opcode ∈ {0, 1, 2, 3, 4, 5}` (PutFull, PutPart, Arith, Logic, Get, Hint) | `tluhtoaxi4_props.sv:179-185` | Reserved opcodes (6, 7) illegal per TL spec |
+| TL-A2 | `a.size ≤ 6` (max 64 B = beatBytes × maxBurst) | `tluhtoaxi4_props.sv:188-189` | sizeBits=6 envelope |
+| TL-A3 | A-channel bits stable while `valid && !ready` (irrevocability) | `tluhtoaxi4_props.sv:192-202` | TL master contract |
+| TL-A4 | While inside a Put A burst (`w_in_burst`), `a.opcode/source/size` match the snapshotted burst | `tluhtoaxi4_props.sv:431-435` | Real TL contract — burst beats share a header |
+| TL-A5 | Single-outstanding per engine: no new Get/Put/Hint/Atomic while same engine has a pending transaction | `tluhtoaxi4_props.sv:440-447` | Bridge's per-engine slot is 1-deep |
+| TL-A6 | Atomic `a.size ≤ 3` (single beat, ≤ beatBytes) | `tluhtoaxi4_props.sv:453-454` | Bridge routes oversized atomics to error slot — keeps the ghost tight |
+| TL-A7 | When read+atomic both pending, `r_xact_source != a_xact_source`; same for write+atomic | `tluhtoaxi4_props.sv:460-463` | AXI4 spec: outstanding transactions on the same channel must use unique IDs |
 
 ### AXI subordinate compliance
 
@@ -84,8 +95,8 @@ starts feeling suspicious.
 |----|-----------|----------|-----------|
 | AXI-B0 | B-channel bits stable while `valid && !ready` | `tluhtoaxi4_props.sv:203-209` | AXI4 §A3.2.2 |
 | AXI-R0 | R-channel bits stable while `valid && !ready` | `tluhtoaxi4_props.sv:212-220` | AXI4 §A3.2.2 |
-| AXI-B1 | `b.id == w_xact_source` while a write is in flight | `tluhtoaxi4_props.sv:393-394` | Single-outstanding-write — only one B can be returned for it |
-| AXI-R1 | `r.id == r_xact_source` while a read is in flight | `tluhtoaxi4_props.sv:395-396` | Single-outstanding-read — only one R series can be returned |
+| AXI-B1 | Any B response must match a pending write or atomic engine's source | `tluhtoaxi4_props.sv:469-471` | Slave doesn't fabricate responses; AXI ID uniqueness disambiguates write vs atomic |
+| AXI-R1 | Any R response must match a pending read or atomic engine's source | `tluhtoaxi4_props.sv:472-474` | Same as B1 but for the R channel |
 
 ---
 
@@ -161,10 +172,9 @@ that the bridge produces the right response — failures raise `AssertionError`.
 These are tracked in `doc/PLAN.md` under longer horizon; listing here
 so reviewers see the catalog's edges:
 
-- **Atomic engine** has no formal ghost.  Atomic-side properties (R+B
-  resp propagation, AxLOCK pinned high, RMW ordering) are only validated
-  via scoreboard in the C++ TB.
-- **Multi-outstanding F1/F4/F5/F7** still pending — see §1's "Deferred"
-  table.
+- **F1/F4/F5/F7** still pending — see §1's "Deferred" table.
 - **WSTRB ⊆ mask** is only checked behaviorally by the AXI slave model;
   no formal assertion.
+- **AXI exclusive-monitor semantics** (EXOKAY vs OKAY discrimination on
+  atomic B-response) are not modelled — the bridge accepts both as
+  success, consistent with single-master use.

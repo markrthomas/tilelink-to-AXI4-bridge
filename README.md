@@ -104,7 +104,7 @@ in flight.
 | Random sim | 100 Put/Get/Hint randomized jobs + 24 atomic-init pairs (`0x4000+`) per run (seed `0xC0FFEE`, rotating sources, full op mix incl. PutPartialData and Arith/Logic atomics) |
 | Last result | **PASS** — 183 jobs, 0 errors, 1442 sim ticks, peak concurrency=3 |
 | Lint | `make lint` clean (0 warnings, 5 documented `UNUSEDSIGNAL` suppressions) |
-| Coverage | 95.5% line (233/244) — above the 80% DV_STANDARDS floor |
-| Formal | `make formal` — BMC depth 30 + 3 cover witnesses (per-engine F2 / F3 / F6 / F8 / corrupt-discipline) |
+| Coverage | 95.1% line (232/244) — above the 80% DV_STANDARDS floor |
+| Formal | `make formal` — BMC depth 30 + 4 cover witnesses (per-engine F2 / F3 incl. atomic, F6 / F8, F-LOCK, corrupt-discipline) |
 | Cocotb | `make cocotb` — 9 directed tests on Icarus (`cocotb/test_bridge.py`, incl. atomic add/xor/swap) |
 | GitHub Actions CI | `.github/workflows/ci.yml` with regress / coverage / formal / cocotb jobs |

@@ -12,8 +12,8 @@
 | Last result | **PASS** — 183 jobs, 0 errors, 1442 sim ticks, **peak concurrency = 3** |
 | Lint | `make lint` — Verilator `--lint-only -Wall`, 0 warnings (5 expected `UNUSEDSIGNAL` suppressions, documented in `Makefile`) |
 | Regress | `make regress` — `lint + sim`, the fast CI gate |
-| Coverage | `make coverage` — Verilator `--coverage` → `coverage.info`. 95.5% line (233/244), above the 80% DV_STANDARDS floor |
-| Formal | `make formal` — SymbiYosys BMC + cover. Per-engine F2/F3/F6/F8 + corrupt-discipline prove at depth 30; C1/C2/C3 witnesses found ≤ step 7 |
+| Coverage | `make coverage` — Verilator `--coverage` → `coverage.info`. 95.1% line (232/244), above the 80% DV_STANDARDS floor |
+| Formal | `make formal` — SymbiYosys BMC + cover. Per-engine F2/F3 (incl. atomic), F6/F8, F-LOCK + corrupt-discipline prove at depth 30; C1/C2/C3/C4 witnesses found ≤ step 7 |
 | Cocotb | `make cocotb` — 9 directed tests on Icarus (`cocotb/`), all pass; mirrors the C++ TB's directed subset incl. atomics |
 | CI (GitHub Actions) | `.github/workflows/ci.yml` with separate `regress`, `coverage`, `formal`, and `cocotb` jobs |
 | Documentation | `README.md`, `doc/DESIGN_SPEC.md`, this `doc/PLAN.md`, `doc/TUTORIAL.md`, `doc/ASSERTIONS.md` |
@@ -252,7 +252,7 @@ at BMC depth 30 / cocotb 9 PASS.
 | Address-decode bridge variant | Multi-subordinate variant fronting several AXI ports keyed on `a_address[31]` (or a config table). Mirrors `IP-axi-to-2apbs`'s APB0/APB1 split. |
 | Parameterized data widths | Validate elaboration and verification at `dataBits ∈ {32, 64, 128, 256}`. |
 | ~~ASSERTIONS.md~~ ✓ DONE 2026-05-27 — single catalog at `doc/ASSERTIONS.md` enumerating formal assertions, env assumptions, cover goals, scoreboard checks, lint, and cocotb tests. |
-| Atomic-engine formal | Extend `tluhtoaxi4_props.sv` with an atomic ghost (a_pending / a_xact_source / a_xact_size) and per-engine F2/F3 for atomic AccessAckData. Track AxLOCK pinned high on AR/AW during RMW. |
+| ~~Atomic-engine formal~~ ✓ DONE 2026-05-27 — atomic ghost (`a_pending` / `a_xact_source` / `a_xact_size`), per-engine F2/F3 over read-vs-atomic disambiguated by `r_fire`, F-LOCK structural assertion, C4 cover witness, cross-engine source-uniqueness assumption.  Found a latent bridge bug in the process: `dSelR` published `tl.d.valid = 1'b1` even when no fresh AXI R was backing the beat — fixed in the bridge (now gated on `io.axi.r.valid`). |
 | UVM environment | If/when the workspace standardizes on UVM CI, add a `uvm/` env mirroring `IP-axi-to-2apbs/uvm/`. |
 
 ---

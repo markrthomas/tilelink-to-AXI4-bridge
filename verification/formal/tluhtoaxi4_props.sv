@@ -7,14 +7,19 @@
 //   - Cover goals       (covered in the `cover` task)
 //
 // Properties (matching doc/PLAN.md "F" labels):
-//   F6  : AW/AR.burst == INCR and AW/AR.size == log2(beatBytes) = 3
-//   F8  : AW/AR address aligned to beatBytes
-//   F2  : D.source equals the source of the most recent A.fire transaction
+//   F6      : AW/AR.burst == INCR and AW/AR.size == log2(beatBytes) = 3
+//   F8      : AW/AR address aligned to beatBytes
+//   F2      : D.source equals the source of the most recent A.fire transaction
+//             (per-engine: read, write, hint, atomic)
+//   F3      : D.size equals the size of the corresponding request
+//   F-LOCK  : AW.lock == 1 iff atomic engine driving AW; AR.lock == 1 iff
+//             atomic engine driving AR (structural — atomics only)
 //
 // Cover goals (each in its own cover point so the engine produces a witness):
 //   C1  : a write transaction completes (D = AccessAck)
 //   C2  : a read transaction completes  (D = AccessAckData)
 //   C3  : a hint transaction completes  (D = HintAck)
+//   C4  : an atomic RMW completes       (D = AccessAckData, no concurrent R.fire)
 
 `default_nettype none
 `timescale 1ns/1ps
@@ -89,6 +94,7 @@ module tluhtoaxi4_props (
     wire [7:0]  io_axi_aw_bits_len;
     wire [2:0]  io_axi_aw_bits_size;
     wire [1:0]  io_axi_aw_bits_burst;
+    wire        io_axi_aw_bits_lock;
 
     wire        io_axi_w_valid;
     wire [63:0] io_axi_w_bits_data;
@@ -103,6 +109,7 @@ module tluhtoaxi4_props (
     wire [7:0]  io_axi_ar_bits_len;
     wire [2:0]  io_axi_ar_bits_size;
     wire [1:0]  io_axi_ar_bits_burst;
+    wire        io_axi_ar_bits_lock;
 
     wire        io_axi_r_ready;
 
@@ -139,6 +146,7 @@ module tluhtoaxi4_props (
         .io_axi_aw_bits_len(io_axi_aw_bits_len),
         .io_axi_aw_bits_size(io_axi_aw_bits_size),
         .io_axi_aw_bits_burst(io_axi_aw_bits_burst),
+        .io_axi_aw_bits_lock(io_axi_aw_bits_lock),
 
         .io_axi_w_ready(io_axi_w_ready),
         .io_axi_w_valid(io_axi_w_valid),
@@ -158,6 +166,7 @@ module tluhtoaxi4_props (
         .io_axi_ar_bits_len(io_axi_ar_bits_len),
         .io_axi_ar_bits_size(io_axi_ar_bits_size),
         .io_axi_ar_bits_burst(io_axi_ar_bits_burst),
+        .io_axi_ar_bits_lock(io_axi_ar_bits_lock),
 
         .io_axi_r_ready(io_axi_r_ready),
         .io_axi_r_valid(io_axi_r_valid),
@@ -174,11 +183,13 @@ module tluhtoaxi4_props (
     // ---- TL master: nothing during reset.
     always @(posedge clock) if (reset) assume (!io_tl_a_valid);
 
-    // ---- TL master: opcode must be one of the supported set (0,1,4,5).
-    //      Atomics (2,3) and reserved (6,7) are out of bridge scope.
+    // ---- TL master: opcode must be one of the supported set (0,1,2,3,4,5).
+    //      Reserved (6,7) are illegal per TL spec.
     always @(*) if (io_tl_a_valid)
         assume (io_tl_a_bits_opcode == 3'd0 ||
                 io_tl_a_bits_opcode == 3'd1 ||
+                io_tl_a_bits_opcode == 3'd2 ||
+                io_tl_a_bits_opcode == 3'd3 ||
                 io_tl_a_bits_opcode == 3'd4 ||
                 io_tl_a_bits_opcode == 3'd5);
 
@@ -239,10 +250,12 @@ module tluhtoaxi4_props (
     //   WRITE : d.fire && d.opcode == AccessAck
     //   HINT  : d.fire && d.opcode == HintAck
     // ======================================================================
-    wire isGetA  = (io_tl_a_bits_opcode == 3'd4);
-    wire isPutA  = (io_tl_a_bits_opcode == 3'd0) ||
-                   (io_tl_a_bits_opcode == 3'd1);
-    wire isHintA = (io_tl_a_bits_opcode == 3'd5);
+    wire isGetA    = (io_tl_a_bits_opcode == 3'd4);
+    wire isPutA    = (io_tl_a_bits_opcode == 3'd0) ||
+                     (io_tl_a_bits_opcode == 3'd1);
+    wire isHintA   = (io_tl_a_bits_opcode == 3'd5);
+    wire isAtomicA = (io_tl_a_bits_opcode == 3'd2) ||
+                     (io_tl_a_bits_opcode == 3'd3);
 
     wire a_fire = io_tl_a_valid && io_tl_a_ready;
     wire d_fire = io_tl_d_valid && io_tl_d_ready;
@@ -363,6 +376,48 @@ module tluhtoaxi4_props (
         end
     end
 
+    // ---- ATOMIC engine ghost ----
+    //   Only legal-size atomics (size <= log2(beatBytes) = 3) are routed to
+    //   the atomic engine; oversized atomics are consumed by the local error
+    //   slot and answered with AccessAck (denied=1), so they don't enter the
+    //   ghost.  Atomic's D response is a single AccessAckData beat carrying
+    //   the OLD value read from memory; the bridge's atomic state machine
+    //   clears on that D.fire.
+    //
+    //   Disambiguation vs the read engine: read's D and AXI R are tied
+    //   (`r.ready := d.ready` when dSelR), so a read's d_fire coincides with
+    //   r_fire.  Atomic captures R earlier (in sARead) and emits D from a
+    //   register (aOldData) — r_fire is 0 at atomic's d_fire.  So:
+    //     read   completing  ↔  d_fire && AccessAckData &&  r_fire
+    //     atomic completing  ↔  d_fire && AccessAckData && !r_fire
+    reg       a_pending;
+    reg [3:0] a_xact_source;
+    reg [5:0] a_xact_size;
+    initial a_pending     = 1'b0;
+    initial a_xact_source = 4'd0;
+    initial a_xact_size   = 6'd0;
+
+    wire a_begin = !a_pending && a_fire && isAtomicA &&
+                   (io_tl_a_bits_size <= 6'd3);
+    wire a_done  = a_pending && d_fire && !r_fire &&
+                   (io_tl_d_bits_opcode == 3'd1) /* AccessAckData */ &&
+                   (io_tl_d_bits_source == a_xact_source);
+
+    always @(posedge clock) begin
+        if (reset) begin
+            a_pending     <= 1'b0;
+            a_xact_source <= 4'd0;
+            a_xact_size   <= 6'd0;
+        end else begin
+            if (a_begin) begin
+                a_pending     <= 1'b1;
+                a_xact_source <= io_tl_a_bits_source;
+                a_xact_size   <= io_tl_a_bits_size;
+            end
+            if (a_done) a_pending <= 1'b0;
+        end
+    end
+
     // ======================================================================
     // ENVIRONMENT ASSUMPTIONS — multi-engine refinements
     // ======================================================================
@@ -380,20 +435,44 @@ module tluhtoaxi4_props (
 
     // ---- TL master: single-outstanding-per-engine.  Each engine has one
     //      slot; the master may not issue a new Get while r_pending, a new
-    //      Put while w_pending, or a new Hint while h_pending_g.
+    //      Put while w_pending, a new Hint while h_pending_g, or a new
+    //      atomic while a_pending.
     always @(*) if (chk && r_pending && io_tl_a_valid)
         assume (!isGetA);
     always @(*) if (chk && w_pending && io_tl_a_valid && !w_in_burst)
         assume (!isPutA);
     always @(*) if (chk && h_pending_g && io_tl_a_valid)
         assume (!isHintA);
+    always @(*) if (chk && a_pending && io_tl_a_valid)
+        assume (!isAtomicA);
 
-    // ---- AXI subordinate: response IDs match the single outstanding
-    //      transaction on the corresponding channel.
-    always @(*) if (chk && w_pending && io_axi_b_valid)
-        assume (io_axi_b_bits_id == w_xact_source);
-    always @(*) if (chk && r_pending && io_axi_r_valid)
-        assume (io_axi_r_bits_id == r_xact_source);
+    // ---- TL master: atomic A must be legal-size (size <= log2(beatBytes)).
+    //      Oversized atomics ARE valid TL traffic but route to the bridge's
+    //      local error slot, not the atomic engine; the ghost would then
+    //      under-track them.  Restricting here keeps F2/F3 tight.
+    always @(*) if (chk && io_tl_a_valid && isAtomicA)
+        assume (io_tl_a_bits_size <= 6'd3);
+
+    // ---- TL master: cross-engine source uniqueness.  When two engines
+    //      share an AXI channel by ID and are both in flight, their sources
+    //      must differ — otherwise the slave response is ambiguous on that
+    //      channel.  Read↔Atomic share AR/R; Write↔Atomic share AW/B.
+    //      Read↔Write share nothing (separate channels) so no constraint.
+    always @(*) if (chk && r_pending && a_pending)
+        assume (r_xact_source != a_xact_source);
+    always @(*) if (chk && w_pending && a_pending)
+        assume (w_xact_source != a_xact_source);
+
+    // ---- AXI subordinate: any B/R response must correspond to a pending
+    //      transaction on that channel and carry that engine's snapshotted
+    //      source.  With the cross-engine uniqueness assumption above, the
+    //      disjunction is unambiguous.
+    always @(*) if (chk && io_axi_b_valid)
+        assume ((w_pending && io_axi_b_bits_id == w_xact_source) ||
+                (a_pending && io_axi_b_bits_id == a_xact_source));
+    always @(*) if (chk && io_axi_r_valid)
+        assume ((r_pending && io_axi_r_bits_id == r_xact_source) ||
+                (a_pending && io_axi_r_bits_id == a_xact_source));
 
     // ======================================================================
     // SAFETY ASSERTIONS — all gated on `chk` (f_past_valid && !reset) so
@@ -417,11 +496,21 @@ module tluhtoaxi4_props (
         assert (io_axi_ar_bits_addr[2:0] == 3'd0);
 
     // F2 — every D beat carries the source snapshotted by the corresponding
-    //      engine when it accepted the transaction.  D.opcode selects which
-    //      engine's snapshot is the source-of-truth.
-    always @(*) if (chk && d_fire && r_pending &&
+    //      engine when it accepted the transaction.
+    //
+    //   Read    : AccessAckData with concurrent r_fire (read's D is tied to
+    //             AXI R via the arbiter — r.ready := tl.d.ready in dSelR).
+    //   Atomic  : AccessAckData without concurrent r_fire (atomic captured
+    //             R earlier and emits D from a register).
+    //   Write   : AccessAck → write engine.
+    //   Hint    : HintAck → hint slot.
+    always @(*) if (chk && d_fire && r_pending && r_fire &&
                     io_tl_d_bits_opcode == 3'd1 /* AccessAckData */)
         assert (io_tl_d_bits_source == r_xact_source);
+
+    always @(*) if (chk && d_fire && a_pending && !r_fire &&
+                    io_tl_d_bits_opcode == 3'd1 /* AccessAckData */)
+        assert (io_tl_d_bits_source == a_xact_source);
 
     always @(*) if (chk && d_fire && w_pending &&
                     io_tl_d_bits_opcode == 3'd0 /* AccessAck */)
@@ -432,15 +521,31 @@ module tluhtoaxi4_props (
         assert (io_tl_d_bits_source == h_xact_source);
 
     // F3 — every D beat's `size` matches the corresponding request's size.
-    always @(*) if (chk && d_fire && r_pending &&
+    always @(*) if (chk && d_fire && r_pending && r_fire &&
                     io_tl_d_bits_opcode == 3'd1)
         assert (io_tl_d_bits_size == r_xact_size);
+    always @(*) if (chk && d_fire && a_pending && !r_fire &&
+                    io_tl_d_bits_opcode == 3'd1)
+        assert (io_tl_d_bits_size == a_xact_size);
     always @(*) if (chk && d_fire && w_pending &&
                     io_tl_d_bits_opcode == 3'd0)
         assert (io_tl_d_bits_size == w_xact_size);
     always @(*) if (chk && d_fire && h_pending_g &&
                     io_tl_d_bits_opcode == 3'd2)
         assert (io_tl_d_bits_size == h_xact_size);
+
+    // F-LOCK — AxLOCK is set IFF the atomic engine is driving the channel.
+    //   Structural: the bridge ties aw.lock to (aState===sAAW) and
+    //   ar.lock to (aState===sAAR), so this is really a sanity check that
+    //   no other engine accidentally raises lock.
+    always @(*) if (chk && io_axi_aw_valid && io_axi_aw_bits_lock)
+        assert (a_pending);
+    always @(*) if (chk && io_axi_ar_valid && io_axi_ar_bits_lock)
+        assert (a_pending);
+    always @(*) if (chk && io_axi_aw_valid && !io_axi_aw_bits_lock)
+        assert (w_pending);
+    always @(*) if (chk && io_axi_ar_valid && !io_axi_ar_bits_lock)
+        assert (r_pending);
 
     // Bonus — writes / hints never set D.corrupt.
     always @(*) if (chk && io_tl_d_valid && (io_tl_d_bits_opcode == 3'd0 ||
@@ -462,5 +567,11 @@ module tluhtoaxi4_props (
     // C3 — hint transaction completes (HintAck on D).
     always @(*) cover (chk && io_tl_d_valid && io_tl_d_ready &&
                        io_tl_d_bits_opcode == 3'd2);
+
+    // C4 — atomic RMW completes (AccessAckData with no concurrent r_fire,
+    //      and the source matches the atomic ghost's snapshot).
+    always @(*) cover (chk && d_fire && a_pending && !r_fire &&
+                       io_tl_d_bits_opcode == 3'd1 &&
+                       io_tl_d_bits_source == a_xact_source);
 
 endmodule

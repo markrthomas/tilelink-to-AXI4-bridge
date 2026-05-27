@@ -398,6 +398,8 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   switch(dSel) {
     is(dSelW) {
       io.axi.b.ready       := io.tl.d.ready
+      // dSelW is selected only when wBValid (= b.valid && id matches),
+      // so b.valid is implied here — no explicit gating needed.
       io.tl.d.valid        := true.B
       io.tl.d.bits.opcode  := TLOpcode.AccessAck
       io.tl.d.bits.param   := 0.U
@@ -411,7 +413,10 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
     }
     is(dSelR) {
       io.axi.r.ready       := io.tl.d.ready
-      io.tl.d.valid        := true.B
+      // Gate D.valid on the backing AXI R beat — otherwise a sticky
+      // rBurstLock with no fresh R from the slave would publish stale
+      // r.bits.data on D (TL protocol violation).
+      io.tl.d.valid        := io.axi.r.valid
       io.tl.d.bits.opcode  := TLOpcode.AccessAckData
       io.tl.d.bits.param   := 0.U
       io.tl.d.bits.size    := rSize
