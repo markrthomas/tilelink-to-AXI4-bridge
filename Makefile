@@ -151,7 +151,7 @@ cov-report: coverage
 	genhtml $(COV_INFO) -o coverage_html
 	@echo "HTML report: coverage_html/index.html"
 
-formal:
+formal: $(SV)
 	$(MAKE) -C verification/formal all
 
 cocotb: $(SV)
