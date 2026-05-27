@@ -73,7 +73,14 @@ Individual stages:
 | SymbiYosys BMC + cover | `make formal` |
 | cocotb directed tests (Icarus) | `make cocotb` |
 | Regress + coverage + formal + cocotb (full local CI) | `make ci` |
+| Run sim and open `sim.vcd` in GTKWave | `make wave` |
+| Open the formal cover witness in GTKWave | `make wave-formal` |
+| Open the BMC counter-example (only after a failure) | `make wave-bmc` |
 | Clean every generated artifact | `make clean` |
+
+The wave targets honor `WAVE_VIEWER` (default `gtkwave`) and `WAVE_FILE`
+(default `sim.vcd`).  Example: `make wave WAVE_VIEWER=surfer
+WAVE_FILE=verification/formal/tluhtoaxi4_cover/engine_0/trace2.vcd`.
 
 GitHub Actions coverage lives in `.github/workflows/ci.yml`, with separate
 `regress`, `coverage`, `formal`, and `cocotb` jobs.

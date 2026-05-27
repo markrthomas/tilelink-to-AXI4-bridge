@@ -8,6 +8,9 @@
 #   make ci          — regress + coverage + formal + cocotb
 #   make elab        — Chisel -> SystemVerilog into generated/
 #   make build       — Verilator TB build (no run)
+#   make wave        — run sim then open sim.vcd in GTKWave
+#   make wave-formal — open the formal cover witness in GTKWave
+#   make wave-bmc    — open the BMC counter-example (if present)
 #   make clean       — wipe every generated artifact
 
 SHELL := /bin/bash
@@ -67,7 +70,15 @@ COV_FLAGS := \
     -Mdir $(COV_DIR) \
     -CFLAGS "-std=c++17 -O2"
 
-.PHONY: all elab build sim run lint lint-decoder regress coverage cov-report formal cocotb ci clean
+.PHONY: all elab build sim run lint lint-decoder regress coverage cov-report formal cocotb wave wave-formal wave-bmc ci clean
+
+# ---- Waveform viewer ----
+# Override on the command line, e.g. `make wave WAVE_VIEWER=surfer`.
+WAVE_VIEWER ?= gtkwave
+# Default trace path — `make wave WAVE_FILE=foo.vcd` opens an arbitrary VCD.
+WAVE_FILE   ?= sim.vcd
+BMC_TRACE   := verification/formal/tluhtoaxi4_bmc/engine_0/trace.vcd
+COVER_TRACE := verification/formal/tluhtoaxi4_cover/engine_0/trace0.vcd
 
 all: sim
 
@@ -93,6 +104,35 @@ lint-decoder: $(DECODER_SV)
 	@echo "lint-decoder: 0 warnings"
 
 regress: lint lint-decoder sim
+
+# --------- Waveforms ---------
+# `wave` runs the sim (refreshing sim.vcd if anything changed) and pops up
+# GTKWave on the result.  Override WAVE_FILE to view a different VCD:
+#   make wave WAVE_FILE=verification/formal/.../trace0.vcd
+#   make wave WAVE_VIEWER=surfer
+wave: sim
+	@command -v $(WAVE_VIEWER) >/dev/null 2>&1 || { \
+	    echo "$(WAVE_VIEWER) not on PATH — install it or override WAVE_VIEWER"; exit 1; }
+	@test -f $(WAVE_FILE) || { echo "$(WAVE_FILE) not found"; exit 1; }
+	$(WAVE_VIEWER) $(WAVE_FILE) &
+
+# Cover-witness trace from SymbiYosys (depth-bounded reachability example).
+# Multiple witnesses exist in tluhtoaxi4_cover/engine_0/trace*.vcd; this opens
+# the first.  Override WAVE_FILE to pick a specific one.
+wave-formal: formal
+	@command -v $(WAVE_VIEWER) >/dev/null 2>&1 || { \
+	    echo "$(WAVE_VIEWER) not on PATH"; exit 1; }
+	@test -f $(COVER_TRACE) || { echo "$(COVER_TRACE) not found — run make formal first"; exit 1; }
+	$(WAVE_VIEWER) $(COVER_TRACE) &
+
+# BMC counter-example only exists when an assertion failed; if BMC currently
+# passes, the file is absent.
+wave-bmc:
+	@test -f $(BMC_TRACE) || { \
+	    echo "no BMC counter-example at $(BMC_TRACE) — BMC is currently passing"; exit 1; }
+	@command -v $(WAVE_VIEWER) >/dev/null 2>&1 || { \
+	    echo "$(WAVE_VIEWER) not on PATH"; exit 1; }
+	$(WAVE_VIEWER) $(BMC_TRACE) &
 
 # --------- Coverage ---------
 # Build a separate harness with --coverage; run; convert to lcov info.
