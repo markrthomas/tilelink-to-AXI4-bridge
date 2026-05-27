@@ -283,6 +283,40 @@ result on `main`:
 
 A SymbiYosys formal proof at `verification/formal/` covers per-engine
 F2 (source preservation), F3 (size preservation), F6 (`AxBURST`/`AxSIZE`),
-F8 (`AxADDR` alignment), and the no-corrupt-on-AccessAck/HintAck
-discipline — all at BMC depth 30 — plus three cover witnesses (write,
-read, hint completion).
+F8 (`AxADDR` alignment), F-LOCK (atomic-only AxLOCK), and the
+no-corrupt-on-AccessAck/HintAck discipline — all at BMC depth 30 — plus
+four cover witnesses (write, read, hint, atomic completion).
+
+## Address-decoded variant (`TLUHToAXI4Decoder`)
+
+For SoCs that need multiple AXI subordinates behind one TL host, the
+companion module
+[`TLUHToAXI4Decoder`](../src/main/scala/tlbridge/TLUHToAXI4Decoder.scala)
+wraps N `TLUHToAXI4` instances with an address decoder and a TL-D
+arbiter.
+
+- Parameterized by `Seq[DecodeRegion]` — half-open `[lo, hi)` intervals.
+- TL-A is fanned out to the bridge whose region contains
+  `a.bits.address`; unmapped addresses fall through to bridge 0 (its
+  downstream AXI slave is expected to return `DECERR`).
+- TL-D is merged via a fixed-priority arbiter with a sticky lock so a
+  multi-beat `AccessAckData` burst is never interrupted by another
+  bridge's response.
+- Emitted to `generated/decoder/` (separate directory so firtool's
+  child-module pruning doesn't overwrite the version consumed by the
+  C++ TB, formal wrapper, and cocotb env).
+- `make lint-decoder` lint-validates the generated SV (part of the
+  regress gate).
+
+**Master-side assumption.** Per-source FIFO ordering *across*
+subordinates is the master's responsibility — the decoder does not stall
+or reorder.  A well-behaved master either uses a fresh source per
+outstanding transaction (the usual convention) or accepts that
+differently-paced subordinates may return D in an order that drifts from
+program order for a shared source.
+
+**Burst constraint.** A burst must lie entirely within one
+`DecodeRegion`.  Region-crossing bursts are undefined.
+
+A dedicated multi-port testbench and formal extension are tracked as
+follow-up in `doc/PLAN.md`.

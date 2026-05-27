@@ -65,7 +65,8 @@ Individual stages:
 | Chisel → SystemVerilog only | `make elab` |
 | Verilator build only (requires SV present) | `make build` |
 | Run the simulation | `make sim` |
-| Verilator `--lint-only` | `make lint` |
+| Verilator `--lint-only` (standalone bridge) | `make lint` |
+| Verilator `--lint-only` (address-decoded variant) | `make lint-decoder` |
 | Lint + sim (fast CI gate) | `make regress` |
 | Coverage build + `coverage.info` | `make coverage` |
 | HTML coverage report (requires `lcov`) | `make cov-report` |
@@ -110,3 +111,4 @@ in flight.
 | Formal | `make formal` — BMC depth 30 + 4 cover witnesses (per-engine F2 / F3 incl. atomic, F6 / F8, F-LOCK, corrupt-discipline) |
 | Cocotb | `make cocotb` — 9 directed tests on Icarus (`cocotb/test_bridge.py`, incl. atomic add/xor/swap) |
 | GitHub Actions CI | `.github/workflows/ci.yml` with regress / coverage / formal / cocotb jobs |
+| Address-decoded variant | `TLUHToAXI4Decoder` (structural) — emitted to `generated/decoder/`, `make lint-decoder` clean. See `doc/DESIGN_SPEC.md#address-decoded-variant` for the master-side assumptions; full multi-port TB is a follow-up. |

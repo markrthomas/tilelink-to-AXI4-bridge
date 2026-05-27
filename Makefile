@@ -15,6 +15,11 @@ SHELL := /bin/bash
 GEN_DIR   := generated
 SV        := $(GEN_DIR)/TLUHToAXI4.sv
 
+# Address-decoded variant — emitted alongside the standalone bridge in
+# $(GEN_DIR)/decoder/.  Lint-only validation today; full TB is a follow-up.
+DECODER_DIR := $(GEN_DIR)/decoder
+DECODER_SV  := $(DECODER_DIR)/TLUHToAXI4Decoder.sv $(DECODER_DIR)/TLUHToAXI4.sv
+
 SBT       := sbt
 VERILATOR := verilator
 
@@ -62,11 +67,11 @@ COV_FLAGS := \
     -Mdir $(COV_DIR) \
     -CFLAGS "-std=c++17 -O2"
 
-.PHONY: all elab build sim run lint regress coverage cov-report formal cocotb ci clean
+.PHONY: all elab build sim run lint lint-decoder regress coverage cov-report formal cocotb ci clean
 
 all: sim
 
-elab $(SV):
+elab $(SV) $(DECODER_SV):
 	$(SBT) -batch "runMain tlbridge.Main"
 
 build $(SIM_EXE): $(SV) $(TB_SRC)
@@ -82,7 +87,12 @@ lint: $(SV)
 	$(VERILATOR) $(LINT_FLAGS) $(SV)
 	@echo "lint: 0 warnings"
 
-regress: lint sim
+lint-decoder: $(DECODER_SV)
+	$(VERILATOR) --lint-only -Wall $(LINT_SUPPRESS) \
+	    --top-module TLUHToAXI4Decoder $(DECODER_SV)
+	@echo "lint-decoder: 0 warnings"
+
+regress: lint lint-decoder sim
 
 # --------- Coverage ---------
 # Build a separate harness with --coverage; run; convert to lcov info.
