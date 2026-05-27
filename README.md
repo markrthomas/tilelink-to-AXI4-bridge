@@ -35,7 +35,9 @@ New to this repo? Start with [`doc/TUTORIAL.md`](doc/TUTORIAL.md) — a
 modifying the design, reading waveforms, and lint/coverage. Best read
 with a terminal open.  Every safety property the bridge claims —
 formal assertions, environment assumptions, scoreboard checks — is
-cataloged in [`doc/ASSERTIONS.md`](doc/ASSERTIONS.md).
+cataloged in [`doc/ASSERTIONS.md`](doc/ASSERTIONS.md).  Wondering why
+the bridge stops at TL-UH and doesn't extend to coherent TL-C?  See
+[`doc/TLC_EVALUATION.md`](doc/TLC_EVALUATION.md).
 
 ## Prerequisites
 

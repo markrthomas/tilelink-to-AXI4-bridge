@@ -16,7 +16,7 @@
 | Formal | `make formal` — SymbiYosys BMC + cover. Per-engine F2/F3 (incl. atomic), F6/F8, F-LOCK + corrupt-discipline prove at depth 30; C1/C2/C3/C4 witnesses found ≤ step 7 |
 | Cocotb | `make cocotb` — 9 directed tests on Icarus (`cocotb/`), all pass; mirrors the C++ TB's directed subset incl. atomics |
 | CI (GitHub Actions) | `.github/workflows/ci.yml` with separate `regress`, `coverage`, `formal`, and `cocotb` jobs |
-| Documentation | `README.md`, `doc/DESIGN_SPEC.md`, this `doc/PLAN.md`, `doc/TUTORIAL.md`, `doc/ASSERTIONS.md` |
+| Documentation | `README.md`, `doc/DESIGN_SPEC.md`, this `doc/PLAN.md`, `doc/TUTORIAL.md`, `doc/ASSERTIONS.md`, `doc/TLC_EVALUATION.md` |
 
 The repo passes the workspace-level `make sim` requirement of
 [`DV_STANDARDS.md`](../../DV_STANDARDS.md) but is missing every other
@@ -248,7 +248,7 @@ at BMC depth 30 / cocotb 9 PASS.
 
 | Theme | Aim |
 |-------|-----|
-| TL-C evaluation | Decide whether to upgrade to coherent TL (Acquire/Release/Probe). Tentatively *no* — AXI lacks coherence semantics; document the reasoning. |
+| ~~TL-C evaluation~~ ✓ DONE 2026-05-27 — decision: stay on TL-UH.  See [`doc/TLC_EVALUATION.md`](TLC_EVALUATION.md) for the reasoning and triggers to revisit (ACE/ACE-Lite, probe-back consumers, coherent host interconnect). |
 | Address-decode bridge variant | Multi-subordinate variant fronting several AXI ports keyed on `a_address[31]` (or a config table). Mirrors `IP-axi-to-2apbs`'s APB0/APB1 split. |
 | Parameterized data widths | Validate elaboration and verification at `dataBits ∈ {32, 64, 128, 256}`. |
 | ~~ASSERTIONS.md~~ ✓ DONE 2026-05-27 — single catalog at `doc/ASSERTIONS.md` enumerating formal assertions, env assumptions, cover goals, scoreboard checks, lint, and cocotb tests. |
