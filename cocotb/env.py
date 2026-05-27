@@ -16,10 +16,12 @@ import cocotb
 from cocotb.triggers import RisingEdge
 
 # TL A-channel opcodes
-OP_PUT_FULL = 0
-OP_PUT_PART = 1
-OP_GET      = 4
-OP_HINT     = 5
+OP_PUT_FULL   = 0
+OP_PUT_PART   = 1
+OP_ARITHMETIC = 2
+OP_LOGICAL    = 3
+OP_GET        = 4
+OP_HINT       = 5
 # TL D-channel opcodes
 D_ACCESS_ACK      = 0
 D_ACCESS_ACK_DATA = 1
@@ -93,11 +95,11 @@ class TLMaster:
         d.io_tl_a_bits_data.value     = 0
         d.io_tl_a_bits_corrupt.value  = 0
 
-    def _drive_a_beat(self, opcode, size, source, address, data, mask):
+    def _drive_a_beat(self, opcode, size, source, address, data, mask, param=0):
         d = self.dut
         d.io_tl_a_valid.value         = 1
         d.io_tl_a_bits_opcode.value   = opcode
-        d.io_tl_a_bits_param.value    = 0
+        d.io_tl_a_bits_param.value    = param
         d.io_tl_a_bits_size.value     = size
         d.io_tl_a_bits_source.value   = source
         d.io_tl_a_bits_address.value  = address
@@ -138,6 +140,20 @@ class TLMaster:
         await self._wait_a_fire()
         self._set_a_idle()
         return await self._collect_response(source, beats_for_size(size))
+
+    async def arithmetic(self, address: int, size: int, source: int,
+                         param: int, data: int) -> TLResponse:
+        self._drive_a_beat(OP_ARITHMETIC, size, source, address, data, FULL_MASK, param)
+        await self._wait_a_fire()
+        self._set_a_idle()
+        return await self._collect_response(source, 1)
+
+    async def logical(self, address: int, size: int, source: int,
+                      param: int, data: int) -> TLResponse:
+        self._drive_a_beat(OP_LOGICAL, size, source, address, data, FULL_MASK, param)
+        await self._wait_a_fire()
+        self._set_a_idle()
+        return await self._collect_response(source, 1)
 
     async def hint(self, address: int, size: int, source: int) -> TLResponse:
         self._drive_a_beat(OP_HINT, size, source, address, 0, FULL_MASK)

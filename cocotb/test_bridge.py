@@ -135,3 +135,59 @@ async def test_byte_at_offset(dut):
     # The Get returns the full 8-byte beat at the aligned base; only the
     # target byte should be non-zero.
     assert r.data == [val], f"byte readback: {[hex(x) for x in r.data]}"
+
+
+@cocotb.test()
+async def test_atomic_add(dut):
+    """Test Atomic Arithmetic (ADD) at 0x1000."""
+    tl, _ = await _setup(dut)
+    addr = 0x1000
+    # Initialize to 10
+    await tl.put_full(addr, 3, 1, [10])
+
+    # ADD 20
+    # param 4 is ADD
+    resp = await tl.arithmetic(addr, 3, 2, 4, 20)
+    assert resp.opcode == D_ACCESS_ACK_DATA
+    assert resp.data == [10], f"Expected old data 10, got {resp.data[0]}"
+
+    # Verify result is 30
+    resp = await tl.get(addr, 3, 3)
+    assert resp.data == [30], f"Expected 30, got {resp.data[0]}"
+
+
+@cocotb.test()
+async def test_atomic_xor(dut):
+    """Test Atomic Logical (XOR) at 0x2000."""
+    tl, _ = await _setup(dut)
+    addr = 0x2000
+    # Initialize to 0xAA
+    await tl.put_full(addr, 3, 1, [0xAA])
+
+    # XOR 0xFF
+    # param 0 is XOR
+    resp = await tl.logical(addr, 3, 2, 0, 0xFF)
+    assert resp.opcode == D_ACCESS_ACK_DATA
+    assert resp.data == [0xAA]
+
+    # Verify result is 0x55
+    resp = await tl.get(addr, 3, 3)
+    assert resp.data == [0x55]
+
+
+@cocotb.test()
+async def test_atomic_swap(dut):
+    """Test Atomic Logical (SWAP) at 0x3000."""
+    tl, _ = await _setup(dut)
+    addr = 0x3000
+    await tl.put_full(addr, 3, 1, [0x1234])
+
+    # SWAP with 0x5678
+    # param 3 is SWAP
+    resp = await tl.logical(addr, 3, 2, 3, 0x5678)
+    assert resp.opcode == D_ACCESS_ACK_DATA
+    assert resp.data == [0x1234]
+
+    # Verify result is 0x5678
+    resp = await tl.get(addr, 3, 3)
+    assert resp.data == [0x5678]

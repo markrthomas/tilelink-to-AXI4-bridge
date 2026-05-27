@@ -108,6 +108,8 @@ object TLOpcode {
   // A channel
   val PutFullData    = 0.U(3.W)
   val PutPartialData = 1.U(3.W)
+  val ArithmeticData = 2.U(3.W)
+  val LogicalData    = 3.U(3.W)
   val Get            = 4.U(3.W)
   val Hint           = 5.U(3.W)
   // D channel

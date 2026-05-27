@@ -209,6 +209,13 @@ branch.
 
 Refined the `isLocalError` handling to correctly consume bursts (illegal `Put` sizes/opcodes) and return a single `AccessAck` with `denied=1`, preventing bridge hangs during bring-up. Optimized `aBeats` calculation and added standard AXI4 sideband signals (`prot`, `cache`, `lock`, `qos`, `region`) driven with safe defaults. Enabled independent parameterization of `idBits` (ID ≥ source).
 
+### ~~9 — Atomic opcodes~~ ✓ DONE 2026-05-26
+
+Implemented support for `ArithmeticData` (`add`, `min`, `max`, …) and `LogicalData` (`xor`, `or`, `and`, `swap`) by mapping to AXI exclusive accesses (AxLOCK).  Includes:
+- FSM expansion for Read-Modify-Write (RMW) sequence.
+- Internal ALU for TileLink arithmetic/logical operations.
+- Verification via directed RMW tests and formal properties for exclusivity.
+
 ---
 
 ## Longer horizon

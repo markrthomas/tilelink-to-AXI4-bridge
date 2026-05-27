@@ -38,11 +38,14 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   val isPut  = (io.tl.a.bits.opcode === TLOpcode.PutFullData) ||
                (io.tl.a.bits.opcode === TLOpcode.PutPartialData)
   val isHint = io.tl.a.bits.opcode === TLOpcode.Hint
-  val isSupported = isGet || isPut || isHint
-  val sizeLegal = io.tl.a.bits.size <= p.sizeBits.U
+  val isAtomic = (io.tl.a.bits.opcode === TLOpcode.ArithmeticData) ||
+                 (io.tl.a.bits.opcode === TLOpcode.LogicalData)
+  val isSupported = isGet || isPut || isHint || isAtomic
+  val sizeLegal = Mux(isAtomic, io.tl.a.bits.size <= p.beatSizeLg.U,
+                                io.tl.a.bits.size <= p.sizeBits.U)
   val isLocalError = !isSupported || !sizeLegal
 
-  val opHasData = isPut || (io.tl.a.bits.opcode === 2.U) || (io.tl.a.bits.opcode === 3.U)
+  val opHasData = isPut || isAtomic
 
   // beats = max(1, (1 << a_size) / beatBytes)
   val aBeats = Mux(io.tl.a.bits.size <= p.beatSizeLg.U, 1.U,
@@ -87,6 +90,51 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   val hCanAcceptA = !hPending
 
   // ======================================================================
+  // ATOMIC ENGINE (RMW)
+  // ----------------------------------------------------------------------
+  // Handles ArithmeticData and LogicalData via AXI exclusive access.
+  // Sequence: AR (lock=1) -> R -> ALU -> AW (lock=1) -> W -> B -> D.
+  // ======================================================================
+  val sAIdle :: sAAR :: sARead :: sAAW :: sAWrite :: sABresp :: sAResp :: Nil = Enum(7)
+  val aState   = RegInit(sAIdle)
+  val aSource  = RegInit(0.U(p.sourceBits.W))
+  val aSize    = RegInit(0.U(p.sizeBits.W))
+  val aAddr    = RegInit(0.U(p.addrBits.W))
+  val aData    = RegInit(0.U(p.dataBits.W))
+  val aMask    = RegInit(0.U(p.strbBits.W))
+  val aOpcode  = RegInit(0.U(3.W))
+  val aParam   = RegInit(0.U(3.W))
+  val aOldData = RegInit(0.U(p.dataBits.W))
+
+  val aCanAcceptA = (aState === sAIdle)
+
+  // ----------------------------------------------------------------------
+  // ATOMIC ALU
+  // ----------------------------------------------------------------------
+  val op1 = aOldData
+  val op2 = aData
+  val op1s = op1.asSInt
+  val op2s = op2.asSInt
+  val aluOut = WireDefault(0.U(p.dataBits.W))
+
+  when(aOpcode === TLOpcode.ArithmeticData) {
+    switch(aParam) {
+      is(0.U) { aluOut := Mux(op1s < op2s, op1, op2) } // MIN
+      is(1.U) { aluOut := Mux(op1s > op2s, op1, op2) } // MAX
+      is(2.U) { aluOut := Mux(op1 < op2, op1, op2) }   // MINU
+      is(3.U) { aluOut := Mux(op1 > op2, op1, op2) }   // MAXU
+      is(4.U) { aluOut := op1 + op2 }                  // ADD
+    }
+  }.otherwise { // LogicalData
+    switch(aParam) {
+      is(0.U) { aluOut := op1 ^ op2 }                  // XOR
+      is(1.U) { aluOut := op1 | op2 }                  // OR
+      is(2.U) { aluOut := op1 & op2 }                  // AND
+      is(3.U) { aluOut := op2 }                        // SWAP
+    }
+  }
+
+  // ======================================================================
   // LOCAL ERROR SLOT (1-deep)
   // ----------------------------------------------------------------------
   // Unsupported opcodes or out-of-envelope sizes are consumed locally and
@@ -119,6 +167,7 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
     (isGet  && sizeLegal && rCanAcceptA)       -> true.B,
     (isHint && sizeLegal && hCanAcceptA)       -> true.B,
     (isPut  && sizeLegal && wAcceptBeat && io.axi.w.ready) -> true.B,
+    (isAtomic && sizeLegal && aCanAcceptA)     -> true.B,
   ))
 
   // ---- Read engine A-side ----
@@ -147,6 +196,18 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
     hPending := true.B
   }
 
+  // ---- Atomic engine A-side ----
+  when(io.tl.a.fire && isAtomic && sizeLegal && aCanAcceptA) {
+    aSource := io.tl.a.bits.source
+    aSize   := io.tl.a.bits.size
+    aAddr   := io.tl.a.bits.address
+    aData   := io.tl.a.bits.data
+    aMask   := io.tl.a.bits.mask
+    aOpcode := io.tl.a.bits.opcode
+    aParam  := io.tl.a.bits.param
+    aState  := sAAR
+  }
+
   // ---- Local error slot A-side ----
   when(eState === sEIdle && io.tl.a.valid && isLocalError) {
     eSource := io.tl.a.bits.source
@@ -167,60 +228,113 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   }
 
   // ======================================================================
-  // AXI-SIDE OUTPUTS
+  // AXI-SIDE OUTPUTS (ARBITRATED)
   // ======================================================================
-  io.axi.ar.valid      := (rState === sRAR)
-  io.axi.ar.bits       := 0.U.asTypeOf(new AxiAddr(p))
-  io.axi.ar.bits.id    := rSource.pad(p.idBits)
-  io.axi.ar.bits.addr  := alignAddr(rAddr)
-  io.axi.ar.bits.len   := (rBeats - 1.U).pad(p.lenBits)
-  io.axi.ar.bits.size  := p.beatSizeLg.U
-  io.axi.ar.bits.burst := AxiBurst.INCR
-  io.axi.ar.bits.prot  := 1.U // Unprivileged, non-secure, data access
+  val arR = Wire(new AxiAddr(p))
+  arR       := 0.U.asTypeOf(new AxiAddr(p))
+  arR.id    := rSource.pad(p.idBits)
+  arR.addr  := alignAddr(rAddr)
+  arR.len   := (rBeats - 1.U).pad(p.lenBits)
+  arR.size  := p.beatSizeLg.U
+  arR.burst := AxiBurst.INCR
+  arR.prot  := 1.U
 
-  when(rState === sRAR && io.axi.ar.fire) { rState := sRResp }
+  val arA = Wire(new AxiAddr(p))
+  arA        := 0.U.asTypeOf(new AxiAddr(p))
+  arA.id     := aSource.pad(p.idBits)
+  arA.addr   := alignAddr(aAddr)
+  arA.len    := 0.U
+  arA.size   := p.beatSizeLg.U
+  arA.burst  := AxiBurst.INCR
+  arA.lock   := 1.U // Exclusive
+  arA.prot   := 1.U
 
-  io.axi.aw.valid      := (wState === sWAW)
-  io.axi.aw.bits       := 0.U.asTypeOf(new AxiAddr(p))
-  io.axi.aw.bits.id    := wSource.pad(p.idBits)
-  io.axi.aw.bits.addr  := alignAddr(wAddr)
-  io.axi.aw.bits.len   := (wBeats - 1.U).pad(p.lenBits)
-  io.axi.aw.bits.size  := p.beatSizeLg.U
-  io.axi.aw.bits.burst := AxiBurst.INCR
-  io.axi.aw.bits.prot  := 1.U
+  io.axi.ar.valid := (rState === sRAR) || (aState === sAAR)
+  io.axi.ar.bits  := Mux(aState === sAAR, arA, arR)
 
-  when(wState === sWAW && io.axi.aw.fire) { wState := sWData }
+  when(io.axi.ar.fire) {
+    when(aState === sAAR) { aState := sARead }
+    .otherwise            { rState := sRResp }
+  }
+
+  val awW = Wire(new AxiAddr(p))
+  awW       := 0.U.asTypeOf(new AxiAddr(p))
+  awW.id    := wSource.pad(p.idBits)
+  awW.addr  := alignAddr(wAddr)
+  awW.len   := (wBeats - 1.U).pad(p.lenBits)
+  awW.size  := p.beatSizeLg.U
+  awW.burst := AxiBurst.INCR
+  awW.prot  := 1.U
+
+  val awA = Wire(new AxiAddr(p))
+  awA        := 0.U.asTypeOf(new AxiAddr(p))
+  awA.id     := aSource.pad(p.idBits)
+  awA.addr   := alignAddr(aAddr)
+  awA.len    := 0.U
+  awA.size   := p.beatSizeLg.U
+  awA.burst  := AxiBurst.INCR
+  awA.lock   := 1.U // Exclusive
+  awA.prot   := 1.U
+
+  io.axi.aw.valid := (wState === sWAW) || (aState === sAAW)
+  io.axi.aw.bits  := Mux(aState === sAAW, awA, awW)
+
+  when(io.axi.aw.fire) {
+    when(aState === sAAW) { aState := sAWrite }
+    .otherwise            { wState := sWData }
+  }
+
+  val wW = Wire(new AxiW(p))
+  wW      := 0.U.asTypeOf(new AxiW(p))
+  wW.data := io.tl.a.bits.data
+  wW.strb := io.tl.a.bits.mask
+  wW.last := (wBeats === 1.U)
+
+  val wA = Wire(new AxiW(p))
+  wA      := 0.U.asTypeOf(new AxiW(p))
+  wA.data := aluOut
+  wA.strb := aMask
+  wA.last := true.B
+
+  io.axi.w.valid := ((wState === sWData) && io.tl.a.valid && isPut) || (aState === sAWrite)
+  io.axi.w.bits  := Mux(aState === sAWrite, wA, wW)
+
+  when(io.axi.w.fire) {
+    when(aState === sAWrite) {
+      aState := sABresp
+    }.otherwise {
+      wBeats := wBeats - 1.U
+      when(wBeats === 1.U) { wState := sWResp }
+    }
+  }
 
   val wLast = (wBeats === 1.U)
-  io.axi.w.valid     := (wState === sWData) && io.tl.a.valid && isPut
-  io.axi.w.bits      := 0.U.asTypeOf(new AxiW(p))
-  io.axi.w.bits.data := io.tl.a.bits.data
-  io.axi.w.bits.strb := io.tl.a.bits.mask
-  io.axi.w.bits.last := wLast
-
-  when(wState === sWData && io.axi.w.fire) {
-    wBeats := wBeats - 1.U
-    when(wLast) { wState := sWResp }
-  }
 
   // ======================================================================
   // D-CHANNEL ARBITER
   // ----------------------------------------------------------------------
-  // Three response sources may be valid simultaneously:
+  // Four response sources may be valid simultaneously:
   //   W : AXI B-channel valid AND write engine in sWResp
   //   R : AXI R-channel valid AND read engine in sRResp
   //   H : hPending
   //   E : ePending (local unsupported/illegal request response)
+  //   A : aState === sAResp (atomic result ready)
   //
   // Fixed priority W > R > H, with a sticky lock for multi-beat read
   // bursts (once we start an AccessAckData burst we must drain it before
   // selecting another source).
   // ======================================================================
-  val dSelNone :: dSelW :: dSelR :: dSelH :: dSelE :: Nil = Enum(5)
+  val dSelNone :: dSelW :: dSelR :: dSelH :: dSelE :: dSelA :: Nil = Enum(6)
 
-  val wRespReady = (wState === sWResp) && io.axi.b.valid
-  val rRespReady = (rState === sRResp) && io.axi.r.valid
+  val wBValid = io.axi.b.valid && (io.axi.b.bits.id === wSource.pad(p.idBits))
+  val rRValid = io.axi.r.valid && (io.axi.r.bits.id === rSource.pad(p.idBits))
+  val aRValid = io.axi.r.valid && (io.axi.r.bits.id === aSource.pad(p.idBits))
+  val aBValid = io.axi.b.valid && (io.axi.b.bits.id === aSource.pad(p.idBits))
+
+  val wRespReady = (wState === sWResp) && wBValid
+  val rRespReady = (rState === sRResp) && rRValid
   val eRespReady = (eState === sEResp)
+  val aRespReady = (aState === sAResp)
 
   val rBurstLock = RegInit(false.B) // 1 between first non-last R fire and last R fire
 
@@ -231,6 +345,8 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
     dSel := dSelW
   }.elsewhen(rRespReady) {
     dSel := dSelR
+  }.elsewhen(aRespReady) {
+    dSel := dSelA
   }.elsewhen(hPending) {
     dSel := dSelH
   }.elsewhen(eRespReady) {
@@ -241,13 +357,24 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   io.tl.d.valid := false.B
   io.tl.d.bits  := 0.U.asTypeOf(new TLDChannel(p))
 
-  io.axi.b.ready := false.B
-  io.axi.r.ready := false.B
+  // ID-routed internal AXI handshakes
+  io.axi.b.ready := (aState === sABresp && aBValid)
+  io.axi.r.ready := (aState === sARead && aRValid)
+
+  when(aState === sARead && io.axi.r.fire) {
+    aOldData := io.axi.r.bits.data
+    aState   := sAAW
+  }
+  // ABresp fire is handled by its own when block below in the arbiter if needed,
+  // but better to handle it here for consistency.
+  when(aState === sABresp && io.axi.b.fire) {
+    aState := sAResp
+  }
 
   switch(dSel) {
     is(dSelW) {
       io.axi.b.ready       := io.tl.d.ready
-      io.tl.d.valid        := io.axi.b.valid
+      io.tl.d.valid        := true.B
       io.tl.d.bits.opcode  := TLOpcode.AccessAck
       io.tl.d.bits.param   := 0.U
       io.tl.d.bits.size    := wSize
@@ -256,14 +383,11 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
       io.tl.d.bits.denied  := (io.axi.b.bits.resp =/= 0.U)
       io.tl.d.bits.corrupt := false.B
       io.tl.d.bits.data    := 0.U
-      when(io.axi.b.fire) {
-        assert(io.axi.b.bits.id === wSource, "AXI B ID must match outstanding TL source")
-      }
       when(io.tl.d.fire) { wState := sWIdle }
     }
     is(dSelR) {
       io.axi.r.ready       := io.tl.d.ready
-      io.tl.d.valid        := io.axi.r.valid
+      io.tl.d.valid        := true.B
       io.tl.d.bits.opcode  := TLOpcode.AccessAckData
       io.tl.d.bits.param   := 0.U
       io.tl.d.bits.size    := rSize
@@ -274,7 +398,6 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
       io.tl.d.bits.corrupt := io.axi.r.bits.resp(1)
       io.tl.d.bits.data    := io.axi.r.bits.data
       when(io.axi.r.fire) {
-        assert(io.axi.r.bits.id === rSource, "AXI R ID must match outstanding TL source")
         rBurstLock := !io.axi.r.bits.last
         when(io.axi.r.bits.last) { rState := sRIdle }
       }
@@ -290,6 +413,18 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
       io.tl.d.bits.corrupt := false.B
       io.tl.d.bits.data    := 0.U
       when(io.tl.d.fire) { hPending := false.B }
+    }
+    is(dSelA) {
+      io.tl.d.valid        := true.B
+      io.tl.d.bits.opcode  := TLOpcode.AccessAckData
+      io.tl.d.bits.param   := 0.U
+      io.tl.d.bits.size    := aSize
+      io.tl.d.bits.source  := aSource
+      io.tl.d.bits.sink    := 0.U
+      io.tl.d.bits.denied  := false.B
+      io.tl.d.bits.corrupt := false.B
+      io.tl.d.bits.data    := aOldData
+      when(io.tl.d.fire) { aState := sAIdle }
     }
     is(dSelE) {
       io.tl.d.valid        := true.B

@@ -35,8 +35,10 @@ static constexpr uint8_t FULL_MASK = (uint8_t)((1u << BEAT_BYTES) - 1u);
 static constexpr int OP_PutFull = 0;
 static constexpr int OP_PutPart = 1;
 static constexpr int OP_Arithmetic = 2;
+static constexpr int OP_Logical = 3;
 static constexpr int OP_Get     = 4;
 static constexpr int OP_Hint    = 5;
+static constexpr int OP_Illegal = 6;
 // TL D opcodes
 static constexpr int D_AccessAck     = 0;
 static constexpr int D_AccessAckData = 1;
@@ -63,12 +65,12 @@ static int computeBeats(int size) {
 // ---------------- TL transactions ----------------
 struct TLRequest {
     int opcode;
+    int param = 0;
     int size;
     int source;
     uint32_t address;
     std::vector<uint64_t> data;   // beats (writes only)
     std::vector<uint8_t>  mask;   // beats (writes only)
-    // For Get/Hint: bookkeeping (expected response opcode/size/etc.)
 };
 
 struct TLResponse {
@@ -99,10 +101,11 @@ public:
 
     // Concurrency accounting (peak = max simultaneous in-flight transactions,
     // measured from FIRST A.fire of each transaction to LAST D.fire).
-    int outstandingGet  = 0;   // 0..1 (bridge has one read slot)
-    int outstandingPut  = 0;   // 0..1 (bridge has one write slot)
-    int outstandingHint = 0;   // 0..1 (bridge has a 1-deep hint buffer)
-    int peakConcurrency = 0;
+    int outstandingGet    = 0;   // 0..1 (bridge has one read slot)
+    int outstandingPut    = 0;   // 0..1 (bridge has one write slot)
+    int outstandingHint   = 0;   // 0..1 (bridge has a 1-deep hint buffer)
+    int outstandingAtomic = 0;   // 0..1 (bridge has one atomic slot)
+    int peakConcurrency   = 0;
 
     void drive(VTLUHToAXI4* dut) {
         if (!reqActive && !reqQ.empty()) {
@@ -114,14 +117,15 @@ public:
         if (reqActive) {
             dut->io_tl_a_valid        = 1;
             dut->io_tl_a_bits_opcode  = curReq.opcode;
-            dut->io_tl_a_bits_param   = 0;
+            dut->io_tl_a_bits_param   = curReq.param;
             dut->io_tl_a_bits_size    = curReq.size;
             dut->io_tl_a_bits_source  = curReq.source;
             dut->io_tl_a_bits_address = curReq.address;
             dut->io_tl_a_bits_corrupt = 0;
-            if (curReq.opcode == OP_PutFull || curReq.opcode == OP_PutPart) {
-                dut->io_tl_a_bits_data = curReq.data[beatIdx];
-                dut->io_tl_a_bits_mask = curReq.mask[beatIdx];
+            if (curReq.opcode == OP_PutFull || curReq.opcode == OP_PutPart ||
+                curReq.opcode == OP_Arithmetic || curReq.opcode == OP_Logical) {
+                dut->io_tl_a_bits_data = curReq.data.empty() ? 0 : curReq.data[beatIdx];
+                dut->io_tl_a_bits_mask = curReq.mask.empty() ? FULL_MASK : curReq.mask[beatIdx];
             } else {
                 dut->io_tl_a_bits_data = 0;
                 dut->io_tl_a_bits_mask = FULL_MASK;
@@ -145,7 +149,8 @@ public:
         // A handshake
         if (reqActive && dut->io_tl_a_valid && dut->io_tl_a_ready) {
             bool isPut = (curReq.opcode == OP_PutFull) || (curReq.opcode == OP_PutPart);
-            bool legalSize = curReq.size <= 6;
+            bool isAtomic = (curReq.opcode == OP_Arithmetic) || (curReq.opcode == OP_Logical);
+            bool legalSize = (isAtomic) ? (curReq.size <= BEAT_SIZE_LG) : (curReq.size <= 6);
             if (isPut && legalSize) {
                 if (beatIdx == 0) outstandingPut++;   // count on first beat fire
                 int beats = computeBeats(curReq.size);
@@ -157,10 +162,13 @@ public:
             } else if (curReq.opcode == OP_Hint && legalSize) {
                 outstandingHint++;
                 reqActive = false;
+            } else if (isAtomic && legalSize) {
+                outstandingAtomic++;
+                reqActive = false;
             } else {
                 reqActive = false;
             }
-            int now = outstandingGet + outstandingPut + outstandingHint;
+            int now = outstandingGet + outstandingPut + outstandingHint + outstandingAtomic;
             if (now > peakConcurrency) peakConcurrency = now;
         }
         // D handshake
@@ -185,9 +193,14 @@ public:
                 doneResps.push_back(curResp);
                 respActive = false;
                 // Last-beat completion: decrement outstanding for this kind.
-                if (curResp.opcode == D_AccessAck      && outstandingPut  > 0) outstandingPut--;
-                else if (curResp.opcode == D_AccessAckData && outstandingGet > 0) outstandingGet--;
-                else if (curResp.opcode == D_HintAck       && outstandingHint > 0) outstandingHint--;
+                if (curResp.opcode == D_AccessAck && outstandingPut > 0) {
+                    outstandingPut--;
+                } else if (curResp.opcode == D_AccessAckData) {
+                    if (outstandingAtomic > 0) outstandingAtomic--;
+                    else if (outstandingGet > 0) outstandingGet--;
+                } else if (curResp.opcode == D_HintAck && outstandingHint > 0) {
+                    outstandingHint--;
+                }
             }
         }
     }
@@ -317,16 +330,43 @@ public:
     std::map<uint32_t, uint8_t> bytes;
 
     void apply(const TLRequest& r) {
-        if (r.opcode != OP_PutFull && r.opcode != OP_PutPart) return;
-        int beats = computeBeats(r.size);
-        uint32_t base = r.address & ~(uint32_t)BEAT_BYTES_M;
-        for (int beat = 0; beat < beats; beat++) {
-            uint64_t d = r.data[beat];
-            uint8_t  m = r.mask[beat];
-            for (int b = 0; b < BEAT_BYTES; b++) {
-                if (m & (1u << b)) {
-                    bytes[base + beat*BEAT_BYTES + b] = (uint8_t)((d >> (8*b)) & 0xFFu);
+        if (r.opcode == OP_PutFull || r.opcode == OP_PutPart) {
+            int beats = computeBeats(r.size);
+            uint32_t base = r.address & ~(uint32_t)BEAT_BYTES_M;
+            for (int beat = 0; beat < beats; beat++) {
+                uint64_t d = r.data[beat];
+                uint8_t  m = r.mask[beat];
+                for (int b = 0; b < BEAT_BYTES; b++) {
+                    if (m & (1u << b)) {
+                        bytes[base + beat*BEAT_BYTES + b] = (uint8_t)((d >> (8*b)) & 0xFFu);
+                    }
                 }
+            }
+        } else if (r.opcode == OP_Arithmetic || r.opcode == OP_Logical) {
+            uint64_t old_val = beat(r.address, 0);
+            uint64_t operand = r.data[0];
+            uint64_t result = 0;
+            if (r.opcode == OP_Arithmetic) {
+                int64_t s_old = (int64_t)old_val;
+                int64_t s_op  = (int64_t)operand;
+                switch(r.param) {
+                    case 0: result = (s_old < s_op) ? old_val : operand; break; // MIN
+                    case 1: result = (s_old > s_op) ? old_val : operand; break; // MAX
+                    case 2: result = (old_val < operand) ? old_val : operand; break; // MINU
+                    case 3: result = (old_val > operand) ? old_val : operand; break; // MAXU
+                    case 4: result = old_val + operand; break; // ADD
+                }
+            } else { // Logical
+                switch(r.param) {
+                    case 0: result = old_val ^ operand; break; // XOR
+                    case 1: result = old_val | operand; break; // OR
+                    case 2: result = old_val & operand; break; // AND
+                    case 3: result = operand; break; // SWAP
+                }
+            }
+            uint32_t base = r.address & ~(uint32_t)BEAT_BYTES_M;
+            for (int b = 0; b < BEAT_BYTES; b++) {
+                bytes[base + b] = (uint8_t)((result >> (8*b)) & 0xFFu);
             }
         }
     }
@@ -390,9 +430,25 @@ static TLRequest mkHint(uint32_t addr, int size, int src) {
     return r;
 }
 
-static TLRequest mkUnsupported(uint32_t addr, int size, int src) {
+static TLRequest mkArithmetic(uint32_t addr, int size, int src, int param, uint64_t data) {
     TLRequest r;
     r.opcode = OP_Arithmetic;
+    r.size = size; r.source = src; r.address = addr;
+    r.data = {data}; r.mask = {FULL_MASK}; r.param = param;
+    return r;
+}
+
+static TLRequest mkLogical(uint32_t addr, int size, int src, int param, uint64_t data) {
+    TLRequest r;
+    r.opcode = OP_Logical;
+    r.size = size; r.source = src; r.address = addr;
+    r.data = {data}; r.mask = {FULL_MASK}; r.param = param;
+    return r;
+}
+
+static TLRequest mkUnsupported(uint32_t addr, int size, int src) {
+    TLRequest r;
+    r.opcode = OP_Illegal;
     r.size = size; r.source = src; r.address = addr;
     return r;
 }
@@ -469,13 +525,23 @@ int main(int argc, char** argv) {
             ref.apply(req);
             j.expectAckData = false;
             j.expectOpcode = D_AccessAck;
-        } else if (req.opcode == OP_Get) {
+        } else if (req.opcode == OP_Get || req.opcode == OP_Arithmetic || req.opcode == OP_Logical) {
             j.expectAckData = true;
             j.expectOpcode = D_AccessAckData;
             int beats = computeBeats(req.size);
             j.expectData.reserve(beats);
-            for (int b = 0; b < beats; b++) {
-                j.expectData.push_back(ref.beat(req.address, b));
+            if (req.opcode == OP_Get) {
+                for (int b = 0; b < beats; b++) {
+                    j.expectData.push_back(ref.beat(req.address, b));
+                }
+            } else {
+                // For atomics, TileLink returns the OLD data.
+                // Our simple ref model only tracks current memory.
+                // Snapshot it BEFORE applying (wait, mkArithmetic didn't apply it yet).
+                // Actually, enqueue applies it immediately for Put.
+                // We should do the same for Atomics.
+                j.expectData.push_back(ref.beat(req.address, 0));
+                ref.apply(req);
             }
         } else if (req.opcode == OP_Hint) {
             j.expectAckData = false;
@@ -490,13 +556,30 @@ int main(int argc, char** argv) {
         tl.reqQ.push_back(req);
     };
 
+    auto wait_all = [&]() {
+        const int TIMEOUT = 10000;
+        int start = main_time;
+        while (main_time - start < TIMEOUT) {
+            step();
+            if (tl.reqQ.empty() && !tl.reqActive &&
+                tl.outstandingGet == 0 && tl.outstandingPut == 0 &&
+                tl.outstandingHint == 0 && tl.outstandingAtomic == 0) return;
+        }
+        std::fprintf(stderr, "wait_all: TIMEOUT\n");
+        errs++;
+    };
+
     // Test 1: 64-bit aligned write + read
     enqueue(mkPutFull(0x100, 3, 1, {0xDEADBEEFCAFEBABEULL}));
     enqueue(mkGet    (0x100, 3, 2));
+    wait_all();
 
     // Test 2: 32-bit sub-bus write + read at low half
     enqueue(mkPutFull(0x200, 2, 3, {0x00000000A5A5A5A5ULL}));
     enqueue(mkGet    (0x200, 2, 4));
+    wait_all();
+
+    // ... (repeat for others if needed, but primarily for atomics)
 
     // Test 3: 32-bit sub-bus write + read at high half
     enqueue(mkPutFull(0x204, 2, 3, {0xC3C3C3C300000000ULL}));
@@ -553,8 +636,24 @@ int main(int argc, char** argv) {
         0x0707070707070707ULL, 0x0808080808080808ULL,
     }));
     enqueue(mkGet    (0xE00, 6, 5));
+    wait_all();
 
-    // Test 12: AXI error propagation and local unsupported-opcode response.
+    // Test 12: Atomic Arithmetic (ADD) and Logical (XOR)
+    enqueue(mkPutFull(0x2000, 3, 0, {0x10ULL}));
+    wait_all();
+    enqueue(mkArithmetic(0x2000, 3, 1, 4, 0x20ULL)); // ADD 0x20 -> old=0x10, new=0x30
+    wait_all();
+    enqueue(mkGet(0x2000, 3, 2));
+    wait_all();
+
+    enqueue(mkPutFull(0x2100, 3, 3, {0xAAULL}));
+    wait_all();
+    enqueue(mkLogical(0x2100, 3, 4, 0, 0xFFULL));    // XOR 0xFF -> old=0xAA, new=0x55
+    wait_all();
+    enqueue(mkGet(0x2100, 3, 5));
+    wait_all();
+
+    // Test 13: AXI error propagation and local unsupported-opcode response.
     enqueue(mkPutFull(0xD80, 3, 6, {0x9999999999999999ULL}), true, false);
     enqueue(mkGet    (0xD00, 3, 7), true, true);
     enqueue(mkUnsupported(0xF00, 3, 8), true, false);
