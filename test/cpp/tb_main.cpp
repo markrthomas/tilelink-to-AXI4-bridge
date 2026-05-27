@@ -512,7 +512,7 @@ int main(int argc, char** argv) {
     std::map<int, std::deque<size_t>> jobIdxBySource;
 
     auto enqueue = [&](TLRequest req, bool expectDenied = false, bool expectCorrupt = false,
-                       bool expectLocalError = false) {
+                       bool expectLocalError = false, bool noRefApply = false) {
         Job j;
         j.req = req;
         j.expectDenied = expectDenied;
@@ -536,12 +536,11 @@ int main(int argc, char** argv) {
                 }
             } else {
                 // For atomics, TileLink returns the OLD data.
-                // Our simple ref model only tracks current memory.
-                // Snapshot it BEFORE applying (wait, mkArithmetic didn't apply it yet).
-                // Actually, enqueue applies it immediately for Put.
-                // We should do the same for Atomics.
+                // Caller may suppress ref.apply when the bridge will skip the
+                // write half (R-error case) — without that, ref would diverge
+                // from the slave memory after the run.
                 j.expectData.push_back(ref.beat(req.address, 0));
-                ref.apply(req);
+                if (!noRefApply) ref.apply(req);
             }
         } else if (req.opcode == OP_Hint) {
             j.expectAckData = false;
@@ -653,6 +652,21 @@ int main(int argc, char** argv) {
     enqueue(mkGet(0x2100, 3, 5));
     wait_all();
 
+    // Test 12b: Atomic at AXI R-error address (0xD00 → RRESP=SLVERR).
+    // The bridge skips the write half and returns denied + corrupt on D.
+    // No ref.apply — the slave memory is never written, so ref must stay 0.
+    enqueue(mkArithmetic(0xD00, 3, 10, 4, 0x1234ULL),
+            /*denied=*/true, /*corrupt=*/true,
+            /*localErr=*/false, /*noRefApply=*/true);
+    wait_all();
+
+    // Test 12c: Atomic at AXI B-error address (0xD80 → BRESP=DECERR).
+    // The bridge completes the R and W but propagates denied on the B-error.
+    // Slave memory was written, so ref.apply stays.
+    enqueue(mkArithmetic(0xD80, 3, 11, 4, 0x5678ULL),
+            /*denied=*/true, /*corrupt=*/false);
+    wait_all();
+
     // Test 13: AXI error propagation and local unsupported-opcode response.
     enqueue(mkPutFull(0xD80, 3, 6, {0x9999999999999999ULL}), true, false);
     enqueue(mkGet    (0xD00, 3, 7), true, true);
@@ -696,6 +710,28 @@ int main(int argc, char** argv) {
             enqueue(mkGet(addr, size, src));
         } else {                              // ~1/6 → Hint
             enqueue(mkHint(addr, size, src));
+        }
+    }
+
+    // Atomic concurrency stress.  Each atomic targets a unique 8-byte slot
+    // in 0x4000-0x40F8 (disjoint from the random sweep's 0x000-0xFFF range),
+    // preceded by an init Put so the "old value" snapshot is deterministic.
+    // No wait_all between pairs — the init Puts pile into the write engine
+    // while the previous atomic's RMW is still mid-flight, exercising the
+    // shared-W-channel arbitration path between atomic and write engines.
+    const int ATOMIC_STRESS = 24;
+    for (int i = 0; i < ATOMIC_STRESS; i++) {
+        uint32_t a_addr = 0x4000u + (uint32_t)(i * 8);
+        int      a_src  = ((i * 5) + 3) & 0xF;
+        uint64_t a_init = ((uint64_t)rng() << 32) | rng();
+        uint64_t a_op   = ((uint64_t)rng() << 32) | rng();
+        enqueue(mkPutFull(a_addr, 3, a_src, {a_init}));
+        if (i & 1) {
+            int param = (int)(rng() % 5);     // ARITH: MIN/MAX/MINU/MAXU/ADD
+            enqueue(mkArithmetic(a_addr, 3, a_src, param, a_op));
+        } else {
+            int param = (int)(rng() % 4);     // LOGIC: XOR/OR/AND/SWAP
+            enqueue(mkLogical(a_addr, 3, a_src, param, a_op));
         }
     }
 

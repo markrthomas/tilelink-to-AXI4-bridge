@@ -5,25 +5,29 @@ import chisel3.util._
 
 /** TileLink-UH (slave) → AXI4 (master) bridge — multi-outstanding.
   *
-  *  Supported A-channel opcodes: Get, PutFullData, PutPartialData, Hint
-  *  (atomics ArithmeticData / LogicalData are not implemented).
+  *  Supported A-channel opcodes: Get, PutFullData, PutPartialData, Hint,
+  *  ArithmeticData, LogicalData.
   *
   *  Mapping:
-  *    Get             → AR + R   → D = AccessAckData
-  *    PutFullData     → AW + W   → D = AccessAck
-  *    PutPartialData  → AW + W   → D = AccessAck      (TL mask  → AXI WSTRB)
-  *    Hint            → (none)   → D = HintAck
+  *    Get             → AR + R                → D = AccessAckData
+  *    PutFullData     → AW + W                → D = AccessAck
+  *    PutPartialData  → AW + W                → D = AccessAck      (TL mask  → AXI WSTRB)
+  *    Hint            → (none)                → D = HintAck
+  *    ArithmeticData  → AR(lock) + R + AW(lock) + W → D = AccessAckData (old)
+  *    LogicalData     → AR(lock) + R + AW(lock) + W → D = AccessAckData (old)
   *
-  *  Two parallel engines (one read, one write) plus a 1-deep hint slot share
-  *  the TL-A channel via opcode-based routing and share the TL-D channel via
-  *  a fixed-priority arbiter (W > R > H) with a read-burst lock so an
-  *  AccessAckData burst is never interrupted mid-flight.  At most one read
-  *  and one write can be in flight simultaneously — sufficient to overlap
-  *  reads with writes (AXI's AR/R and AW/W/B are independent channels).
+  *  Four parallel engines (read, write, hint, atomic RMW) share the TL-A
+  *  channel via opcode-based routing and share the TL-D channel via a
+  *  fixed-priority arbiter (W > R > A > H > E) with a read-burst lock so an
+  *  AccessAckData burst is never interrupted mid-flight.  Each engine has
+  *  a single outstanding slot — sufficient to overlap reads with writes
+  *  and hints (AXI's AR/R and AW/W/B are independent channels).
   *
   *  AXI bursts are always INCR; AxSIZE is fixed at log2(beatBytes), with
   *  WSTRB (writes) handling sub-bus byte enables.  TL `source` is forwarded
-  *  unchanged as the AXI ID for the respective transaction.
+  *  unchanged as the AXI ID for the respective transaction.  Atomics use
+  *  AxLOCK=1 and limit `a.size <= log2(beatBytes)` (single beat only); the
+  *  bridge returns the OLD value to TL per the TileLink-UH atomic contract.
   */
 class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   val io = IO(new Bundle {
@@ -105,6 +109,15 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   val aOpcode  = RegInit(0.U(3.W))
   val aParam   = RegInit(0.U(3.W))
   val aOldData = RegInit(0.U(p.dataBits.W))
+  // Error tracking: RRESP/BRESP collected across the RMW sequence.
+  // AXI4 maps OKAY=00 (or EXOKAY=01 if the slave honors exclusive access);
+  // anything with bit[1] set is SLVERR/DECERR — propagate as TL `denied`.
+  // For exclusive writes, we don't differentiate OKAY vs EXOKAY here: many
+  // AXI4 slaves return OKAY for exclusive writes (they don't model the
+  // exclusive monitor) and the bridge is single-master, so we treat OKAY
+  // as success.
+  val aRespErr = RegInit(false.B)
+  val aRCorrupt = RegInit(false.B)
 
   val aCanAcceptA = (aState === sAIdle)
 
@@ -159,14 +172,17 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   //   Get  : ready when read engine idle               (single-beat fire)
   //   Hint : ready when hint slot free                 (single-beat fire)
   //   Put  : NOT ready in sWIdle (peek only); ready in sWData when W ready
+  //          AND the atomic engine isn't currently driving W (else the Put
+  //          beat would be consumed from TL while AXI sees atomic's data).
   //   Err  : ready in sEData (drain burst) or sEIdle (single-beat fire)
   // ======================================================================
+  val aDrivingW = (aState === sAWrite)
   io.tl.a.ready := MuxCase(false.B, Seq(
     (isLocalError && eAcceptBeat)              -> true.B,
     (isLocalError && eCanAcceptA && !opHasData) -> true.B,
     (isGet  && sizeLegal && rCanAcceptA)       -> true.B,
     (isHint && sizeLegal && hCanAcceptA)       -> true.B,
-    (isPut  && sizeLegal && wAcceptBeat && io.axi.w.ready) -> true.B,
+    (isPut  && sizeLegal && wAcceptBeat && io.axi.w.ready && !aDrivingW) -> true.B,
     (isAtomic && sizeLegal && aCanAcceptA)     -> true.B,
   ))
 
@@ -198,14 +214,16 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
 
   // ---- Atomic engine A-side ----
   when(io.tl.a.fire && isAtomic && sizeLegal && aCanAcceptA) {
-    aSource := io.tl.a.bits.source
-    aSize   := io.tl.a.bits.size
-    aAddr   := io.tl.a.bits.address
-    aData   := io.tl.a.bits.data
-    aMask   := io.tl.a.bits.mask
-    aOpcode := io.tl.a.bits.opcode
-    aParam  := io.tl.a.bits.param
-    aState  := sAAR
+    aSource  := io.tl.a.bits.source
+    aSize    := io.tl.a.bits.size
+    aAddr    := io.tl.a.bits.address
+    aData    := io.tl.a.bits.data
+    aMask    := io.tl.a.bits.mask
+    aOpcode  := io.tl.a.bits.opcode
+    aParam   := io.tl.a.bits.param
+    aRespErr := false.B
+    aRCorrupt := false.B
+    aState   := sAAR
   }
 
   // ---- Local error slot A-side ----
@@ -313,16 +331,16 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   // ======================================================================
   // D-CHANNEL ARBITER
   // ----------------------------------------------------------------------
-  // Four response sources may be valid simultaneously:
+  // Five response sources may be valid simultaneously:
   //   W : AXI B-channel valid AND write engine in sWResp
   //   R : AXI R-channel valid AND read engine in sRResp
+  //   A : aState === sAResp (atomic result ready)
   //   H : hPending
   //   E : ePending (local unsupported/illegal request response)
-  //   A : aState === sAResp (atomic result ready)
   //
-  // Fixed priority W > R > H, with a sticky lock for multi-beat read
-  // bursts (once we start an AccessAckData burst we must drain it before
-  // selecting another source).
+  // Fixed priority W > R > A > H > E, with a sticky lock for multi-beat
+  // read bursts (once we start an AccessAckData burst we must drain it
+  // before selecting another source).
   // ======================================================================
   val dSelNone :: dSelW :: dSelR :: dSelH :: dSelE :: dSelA :: Nil = Enum(6)
 
@@ -362,12 +380,18 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   io.axi.r.ready := (aState === sARead && aRValid)
 
   when(aState === sARead && io.axi.r.fire) {
-    aOldData := io.axi.r.bits.data
-    aState   := sAAW
+    aOldData  := io.axi.r.bits.data
+    // RRESP[1]=1 indicates SLVERR/DECERR — propagate as TL denied+corrupt.
+    aRespErr  := io.axi.r.bits.resp(1)
+    aRCorrupt := io.axi.r.bits.resp(1)
+    // Skip the write half if the read errored — there's nothing meaningful
+    // to write back, and proceeding would surface a misleading second error.
+    when(io.axi.r.bits.resp(1)) { aState := sAResp }
+    .otherwise                  { aState := sAAW   }
   }
-  // ABresp fire is handled by its own when block below in the arbiter if needed,
-  // but better to handle it here for consistency.
   when(aState === sABresp && io.axi.b.fire) {
+    // BRESP[1]=1 (SLVERR/DECERR) → denied. EXOKAY (01) is treated as success.
+    when(io.axi.b.bits.resp(1)) { aRespErr := true.B }
     aState := sAResp
   }
 
@@ -421,8 +445,8 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
       io.tl.d.bits.size    := aSize
       io.tl.d.bits.source  := aSource
       io.tl.d.bits.sink    := 0.U
-      io.tl.d.bits.denied  := false.B
-      io.tl.d.bits.corrupt := false.B
+      io.tl.d.bits.denied  := aRespErr
+      io.tl.d.bits.corrupt := aRCorrupt
       io.tl.d.bits.data    := aOldData
       when(io.tl.d.fire) { aState := sAIdle }
     }

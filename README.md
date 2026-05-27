@@ -33,7 +33,9 @@ behavior — the Chisel source cites it back via comments.
 New to this repo? Start with [`doc/TUTORIAL.md`](doc/TUTORIAL.md) — a
 ~45-minute hands-on walk through the toolchain, the FSM, the testbench,
 modifying the design, reading waveforms, and lint/coverage. Best read
-with a terminal open.
+with a terminal open.  Every safety property the bridge claims —
+formal assertions, environment assumptions, scoreboard checks — is
+cataloged in [`doc/ASSERTIONS.md`](doc/ASSERTIONS.md).
 
 ## Prerequisites
 
@@ -81,27 +83,28 @@ GitHub Actions coverage lives in `.github/workflows/ci.yml`, with separate
 | `PutFullData` (0) | `AW` + `W` | `AccessAck` |
 | `PutPartialData` (1) | `AW` + `W` (`mask` → `WSTRB`) | `AccessAck` |
 | `Hint` (5) | *(none — handled in-bridge)* | `HintAck` |
-| `ArithmeticData` / `LogicalData` | Local denied response | `AccessAck` with `denied=1` |
+| `ArithmeticData` (2) / `LogicalData` (3) | `AR(lock=1)` + `R` + `AW(lock=1)` + `W` (RMW) | `AccessAckData` (OLD value) |
 
 Bursts are always `INCR`. `AxSIZE` is pinned at `log2(beatBytes) = 3`;
 sub-bus writes ride a full beat with `WSTRB` selecting the active bytes.
-The bridge runs three independent engines (read, write, 1-deep hint
-slot) sharing TL-A by opcode and TL-D via a fixed-priority arbiter
-(`W > R > H`) with a sticky lock for in-flight read bursts.  TL `source`
-is forwarded directly as the AXI ID, so a host may overlap a read and a
-write (and a hint) from distinct sources — peak observed concurrency in
-the regression workload is 3 transactions in flight.
+The bridge runs four independent engines (read, write, atomic RMW, and a
+1-deep hint slot) sharing TL-A by opcode and TL-D via a fixed-priority
+arbiter (`W > R > A > H > E`) with a sticky lock for in-flight read
+bursts.  TL `source` is forwarded directly as the AXI ID, so a host may
+overlap a read, a write, an atomic, and a hint from distinct sources —
+peak observed concurrency in the regression workload is 3 transactions
+in flight.
 
 ## Status snapshot
 
 | Area | Status |
 |------|--------|
 | RTL | Elaborated cleanly (Chisel 7.7.0 → firtool 1.139.0) |
-| Directed sim | 19 directed jobs (aligned, sub-bus high/low, 4-beat + 2-beat + 8-beat bursts, partial-strb single + burst, hint, byte at unaligned offset, explicit Put+Get+Hint concurrency, AXI error responses, unsupported opcode, illegal size) |
-| Random sim | 100 randomized jobs per run (seed `0xC0FFEE`, rotating sources, full op mix incl. PutPartialData) |
-| Last result | **PASS** — 127 jobs, 0 errors, 864 sim ticks, peak concurrency=3 |
+| Directed sim | 23 directed jobs (aligned, sub-bus high/low, 4-beat + 2-beat + 8-beat bursts, partial-strb single + burst, hint, byte at unaligned offset, explicit Put+Get+Hint concurrency, atomic ADD/XOR/SWAP, atomic R-error + B-error, AXI error responses, unsupported opcode, illegal size) |
+| Random sim | 100 Put/Get/Hint randomized jobs + 24 atomic-init pairs (`0x4000+`) per run (seed `0xC0FFEE`, rotating sources, full op mix incl. PutPartialData and Arith/Logic atomics) |
+| Last result | **PASS** — 183 jobs, 0 errors, 1442 sim ticks, peak concurrency=3 |
 | Lint | `make lint` clean (0 warnings, 5 documented `UNUSEDSIGNAL` suppressions) |
-| Coverage | 91.1% line (144/158) — above the 80% DV_STANDARDS floor |
+| Coverage | 95.5% line (233/244) — above the 80% DV_STANDARDS floor |
 | Formal | `make formal` — BMC depth 30 + 3 cover witnesses (per-engine F2 / F3 / F6 / F8 / corrupt-discipline) |
-| Cocotb | `make cocotb` — 6 directed tests on Icarus (`cocotb/test_bridge.py`) |
+| Cocotb | `make cocotb` — 9 directed tests on Icarus (`cocotb/test_bridge.py`, incl. atomic add/xor/swap) |
 | GitHub Actions CI | `.github/workflows/ci.yml` with regress / coverage / formal / cocotb jobs |

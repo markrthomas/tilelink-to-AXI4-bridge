@@ -1,22 +1,22 @@
 # Development Plan — tilelink_to_AXI4
 
-**As of:** 2026-05-26
+**As of:** 2026-05-27
 
 ## Current baseline
 
 | Area | Status |
 |------|--------|
-| RTL | `TLUHToAXI4` (parallel read + write engines, 1-deep hint slot, fixed-priority D arbiter with read-burst lock) — Chisel 7.7.0 → firtool 1.139.0 SV |
-| Directed simulation | 19 directed jobs (aligned / sub-bus / bursts incl. 64 B max / PutPartial / Hint / byte-at-offset / explicit concurrent Put→Get→Hint / AXI errors / unsupported opcode / illegal size) |
-| Random simulation | 100 randomized jobs per run (seed `0xC0FFEE`, rotating sources, op mix Put/Get/Hint, includes `PutPartialData` with random mask) |
-| Last result | **PASS** — 127 jobs, 0 errors, 864 sim ticks, **peak concurrency = 3** (read + write + hint simultaneously in flight) |
+| RTL | `TLUHToAXI4` (parallel read + write + atomic engines, 1-deep hint slot, fixed-priority D arbiter with read-burst lock) — Chisel 7.7.0 → firtool 1.139.0 SV |
+| Directed simulation | 23 directed jobs (aligned / sub-bus / bursts incl. 64 B max / PutPartial / Hint / byte-at-offset / explicit concurrent Put→Get→Hint / atomic arith+logic / atomic R-error + B-error / AXI errors / unsupported opcode / illegal size) |
+| Random simulation | 100 Put/Get/Hint + 24 atomic-init pairs (`0x4000+`) per run (seed `0xC0FFEE`, rotating sources, op mix Put/Get/Hint/Arith/Logic with `PutPartialData` masks) |
+| Last result | **PASS** — 183 jobs, 0 errors, 1442 sim ticks, **peak concurrency = 3** |
 | Lint | `make lint` — Verilator `--lint-only -Wall`, 0 warnings (5 expected `UNUSEDSIGNAL` suppressions, documented in `Makefile`) |
 | Regress | `make regress` — `lint + sim`, the fast CI gate |
-| Coverage | `make coverage` — Verilator `--coverage` → `coverage.info`. 91.1% line (144/158), above the 80% DV_STANDARDS floor |
+| Coverage | `make coverage` — Verilator `--coverage` → `coverage.info`. 95.5% line (233/244), above the 80% DV_STANDARDS floor |
 | Formal | `make formal` — SymbiYosys BMC + cover. Per-engine F2/F3/F6/F8 + corrupt-discipline prove at depth 30; C1/C2/C3 witnesses found ≤ step 7 |
-| Cocotb | `make cocotb` — 6 directed tests on Icarus (`cocotb/`), all pass; mirrors the C++ TB's directed subset |
+| Cocotb | `make cocotb` — 9 directed tests on Icarus (`cocotb/`), all pass; mirrors the C++ TB's directed subset incl. atomics |
 | CI (GitHub Actions) | `.github/workflows/ci.yml` with separate `regress`, `coverage`, `formal`, and `cocotb` jobs |
-| Documentation | `README.md`, `doc/DESIGN_SPEC.md`, this `doc/PLAN.md`, `doc/TUTORIAL.md` |
+| Documentation | `README.md`, `doc/DESIGN_SPEC.md`, this `doc/PLAN.md`, `doc/TUTORIAL.md`, `doc/ASSERTIONS.md` |
 
 The repo passes the workspace-level `make sim` requirement of
 [`DV_STANDARDS.md`](../../DV_STANDARDS.md) but is missing every other
@@ -216,17 +216,43 @@ Implemented support for `ArithmeticData` (`add`, `min`, `max`, …) and `Logical
 - Internal ALU for TileLink arithmetic/logical operations.
 - Verification via directed RMW tests and formal properties for exclusivity.
 
+### ~~10 — Atomic engine hardening~~ ✓ DONE 2026-05-27
+
+Post-review hardening of the atomic engine landed in this phase:
+
+- **W-channel arbitration fix.** `io.tl.a.ready` previously asserted for a
+  Put beat while `wState===sWData && w.ready=1`, even if the atomic engine
+  was simultaneously driving W (`aState===sAWrite`).  Since the W-mux
+  routes atomic data on bits, the Put beat was silently consumed from TL
+  with no AXI commit.  Gated the Put-row of the `a.ready` MuxCase on
+  `!(aState === sAWrite)` so Put pauses for atomic's single-beat W.
+- **AXI error propagation.** Atomic D response now carries `denied` /
+  `corrupt` derived from RRESP/BRESP (`resp[1]` = SLVERR/DECERR).  On
+  R-error the engine skips the write half and goes straight to sAResp
+  with denied+corrupt — there's nothing meaningful to write back.
+- **Random-sweep extension.** Added 24 atomic-init pairs at
+  `0x4000-0x40F8` after the 100-job random workload, no `wait_all`
+  between, so init-Puts pile into the write engine while previous
+  atomics' RMWs are mid-flight — actually exercises the W-channel
+  arbitration path.
+- **Directed atomic-error tests.** New Test 12b (atomic at 0xD00 →
+  RRESP=SLVERR) and 12c (atomic at 0xD80 → BRESP=DECERR) cover the new
+  error-propagation paths.
+
+Result: 183 jobs / 0 errors / 95.5% line coverage / formal still passes
+at BMC depth 30 / cocotb 9 PASS.
+
 ---
 
 ## Longer horizon
 
 | Theme | Aim |
 |-------|-----|
-| Atomic opcodes | Implement `ArithmeticData` (`add`, `min`, `max`, …) and `LogicalData` (`xor`, `or`, `and`, `swap`) by mapping to AXI exclusive accesses or in-bridge RMW. Needs a design note on consistency. |
 | TL-C evaluation | Decide whether to upgrade to coherent TL (Acquire/Release/Probe). Tentatively *no* — AXI lacks coherence semantics; document the reasoning. |
 | Address-decode bridge variant | Multi-subordinate variant fronting several AXI ports keyed on `a_address[31]` (or a config table). Mirrors `IP-axi-to-2apbs`'s APB0/APB1 split. |
 | Parameterized data widths | Validate elaboration and verification at `dataBits ∈ {32, 64, 128, 256}`. |
-| ASSERTIONS.md | Per the workspace-wide TODO in `DV_STANDARDS.md`, enumerate every assertion/property and where it lives. |
+| ~~ASSERTIONS.md~~ ✓ DONE 2026-05-27 — single catalog at `doc/ASSERTIONS.md` enumerating formal assertions, env assumptions, cover goals, scoreboard checks, lint, and cocotb tests. |
+| Atomic-engine formal | Extend `tluhtoaxi4_props.sv` with an atomic ghost (a_pending / a_xact_source / a_xact_size) and per-engine F2/F3 for atomic AccessAckData. Track AxLOCK pinned high on AR/AW during RMW. |
 | UVM environment | If/when the workspace standardizes on UVM CI, add a `uvm/` env mirroring `IP-axi-to-2apbs/uvm/`. |
 
 ---
