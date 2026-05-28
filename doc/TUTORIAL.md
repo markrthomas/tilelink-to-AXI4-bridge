@@ -49,18 +49,41 @@ Optional but recommended:
 ├── Makefile                               # All the targets you'll use
 ├── README.md
 ├── doc/
-│   ├── DESIGN_SPEC.md                     # Protocol reference (signal tables, FSM)
+│   ├── DESIGN_SPEC.md                     # Protocol reference for the TL-UH bridge
+│   ├── DESIGN_SPEC_ULITE.md               # Protocol reference for the TL-UL → AXI4-Lite bridge
+│   ├── ASSERTIONS.md                      # Property catalog for both bridges
 │   ├── PLAN.md                            # Roadmap (DV_STANDARDS gaps)
+│   ├── TLC_EVALUATION.md                  # Why we stay on TL-UH (not TL-C)
 │   └── TUTORIAL.md                        # ← this file
 ├── src/main/scala/tlbridge/
 │   ├── Bundles.scala                      # TL-UH and AXI4 IO bundles + opcode constants
-│   ├── TLUHToAXI4.scala                   # The bridge itself (~170 lines)
-│   └── Main.scala                         # Elaboration entry point
+│   ├── TLUHToAXI4.scala                   # The TL-UH bridge (the focus of this tutorial)
+│   ├── TLUHToAXI4Decoder.scala            # Address-decoded N-port wrapper around TLUHToAXI4
+│   ├── TLULToAXILite.scala                # Sibling TL-UL → AXI4-Lite bridge (single-beat)
+│   └── Main.scala                         # Elaboration entry point (emits all variants)
 ├── test/cpp/
-│   └── tb_main.cpp                        # Verilator C++ testbench
+│   ├── tb_main.cpp                        # Verilator C++ testbench (TL-UH)
+│   └── tb_ulite.cpp                       # Verilator C++ testbench (TL-UL → AXI4-Lite)
+├── cocotb/
+│   ├── env.py, test_bridge.py             # cocotb env + tests for TL-UH
+│   └── env_ulite.py, test_ulite.py        # cocotb env + tests for TL-UL → AXI4-Lite
+├── verification/formal/
+│   ├── tluhtoaxi4_props.sv + .sby         # SymbiYosys wrapper for TL-UH
+│   └── tlultoaxilite_props.sv + .sby      # SymbiYosys wrapper for TL-UL → AXI4-Lite
 └── generated/                             # `make elab` writes here
-    └── TLUHToAXI4.sv                      # The emitted SystemVerilog
+    ├── TLUHToAXI4.sv                      # The emitted SystemVerilog (TL-UH bridge)
+    ├── decoder/                           # Address-decoded variant
+    └── ulite/                             # TL-UL → AXI4-Lite bridge
 ```
+
+> **Tutorial scope.** The walk-through below uses the TL-UH bridge as
+> the running example.  The sibling TL-UL → AXI4-Lite bridge has the same
+> shape (Chisel module → SV emit → Verilator/cocotb/formal) and the same
+> Makefile workflow with a `-ulite` suffix on each target (e.g.
+> `make sim-ulite`, `make formal-ulite`).  Its design contract lives in
+> [`DESIGN_SPEC_ULITE.md`](DESIGN_SPEC_ULITE.md); the C++ TB at
+> `test/cpp/tb_ulite.cpp` is a good 300-line counterpoint to `tb_main.cpp`
+> if you want to see a simpler driver/slave pair.
 
 Two paths from source to a running sim:
 

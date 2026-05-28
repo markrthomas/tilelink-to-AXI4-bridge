@@ -13,15 +13,24 @@ DECODER_SV  := $(DECODER_DIR)/TLUHToAXI4Decoder.sv $(DECODER_DIR)/TLUHToAXI4.sv
 WIDTHS      := 32 64 128 256
 WIDTH_DIR   := $(GEN_DIR)/widths
 
+# TL-UL → AXI4-Lite variant — emitted alongside the standalone bridge in
+# $(GEN_DIR)/ulite/.  Lint + Verilator TB + formal + cocotb parity targets
+# below mirror the TL-UH bridge's verification surface.
+ULITE_DIR := $(GEN_DIR)/ulite
+ULITE_SV  := $(ULITE_DIR)/TLULToAXILite.sv
+
 SBT       := sbt
 VERILATOR := verilator
 
-TB_SRC    := test/cpp/tb_main.cpp
-BUILD_DIR := build
-COV_DIR   := build_cov
-SIM_EXE   := $(BUILD_DIR)/VTLUHToAXI4
-COV_EXE   := $(COV_DIR)/VTLUHToAXI4
-COV_INFO  := coverage.info
+TB_SRC      := test/cpp/tb_main.cpp
+ULITE_TB    := test/cpp/tb_ulite.cpp
+BUILD_DIR   := build
+ULITE_BUILD := build_ulite
+COV_DIR     := build_cov
+SIM_EXE     := $(BUILD_DIR)/VTLUHToAXI4
+ULITE_EXE   := $(ULITE_BUILD)/VTLULToAXILite
+COV_EXE     := $(COV_DIR)/VTLUHToAXI4
+COV_INFO    := coverage.info
 
 # Five UNUSEDSIGNAL warnings are expected and intentional:
 #   io_tl_a_bits_param, io_tl_a_bits_corrupt  — TL fields the bridge ignores
@@ -60,7 +69,21 @@ COV_FLAGS := \
     -Mdir $(COV_DIR) \
     -CFLAGS "-std=c++17 -O2"
 
-.PHONY: help all elab elab-widths build sim run lint lint-decoder lint-widths regress coverage cov-report formal cocotb wave wave-formal wave-bmc ci clean
+ULITE_VERILATOR_FLAGS := \
+    --cc \
+    --exe \
+    --build \
+    --trace \
+    -Wall \
+    -Wno-fatal \
+    $(LINT_SUPPRESS) \
+    --top-module TLULToAXILite \
+    -Mdir $(ULITE_BUILD) \
+    -CFLAGS "-std=c++17 -O2"
+
+.PHONY: help all elab elab-widths build sim run lint lint-decoder lint-widths lint-ulite \
+        build-ulite sim-ulite cocotb-ulite formal-ulite regress regress-ulite \
+        coverage cov-report formal cocotb wave wave-formal wave-bmc ci clean
 
 # ---- Waveform viewer ----
 # Override on the command line, e.g. `make wave WAVE_VIEWER=surfer`.
@@ -83,7 +106,13 @@ help:
 	@echo "  lint          Verilator --lint-only on the emitted SV"
 	@echo "  lint-decoder  Lint the address-decoded bridge variant"
 	@echo "  lint-widths   Lint each dataBits in the width sweep"
-	@echo "  regress       lint + lint-decoder + lint-widths + sim (CI gate)"
+	@echo "  lint-ulite    Lint the TL-UL -> AXI4-Lite bridge variant"
+	@echo "  build-ulite   Verilator TB build for the AXI-Lite bridge (no run)"
+	@echo "  sim-ulite     Build + run the TL-UL -> AXI4-Lite Verilator TB"
+	@echo "  formal-ulite  SymbiYosys BMC + cover for the AXI-Lite bridge"
+	@echo "  cocotb-ulite  cocotb directed tests for the AXI-Lite bridge"
+	@echo "  regress       lint + lint-decoder + lint-widths + lint-ulite + sim + sim-ulite"
+	@echo "  regress-ulite lint-ulite + sim-ulite"
 	@echo "  coverage      Verilator --coverage build + coverage.info"
 	@echo "  cov-report    Coverage + HTML report via genhtml (lcov)"
 	@echo "  formal        SymbiYosys BMC + cover (verification/formal/)"
@@ -98,7 +127,7 @@ help:
 
 all: sim
 
-elab $(SV) $(DECODER_SV):
+elab $(SV) $(DECODER_SV) $(ULITE_SV):
 	$(SBT) -batch "runMain tlbridge.Main"
 
 elab-widths:
@@ -131,7 +160,27 @@ lint-widths: elab-widths
 	done
 	@echo "lint-widths: 0 warnings for dataBits=$(WIDTHS)"
 
-regress: lint lint-decoder lint-widths sim
+lint-ulite: $(ULITE_SV)
+	$(VERILATOR) --lint-only -Wall $(LINT_SUPPRESS) \
+	    --top-module TLULToAXILite $(ULITE_SV)
+	@echo "lint-ulite: 0 warnings"
+
+# ---- TL-UL → AXI4-Lite Verilator TB ----
+build-ulite $(ULITE_EXE): $(ULITE_SV) $(ULITE_TB)
+	$(VERILATOR) $(ULITE_VERILATOR_FLAGS) -o VTLULToAXILite $(ULITE_SV) $(ULITE_TB)
+
+sim-ulite: $(ULITE_EXE)
+	cd $(ULITE_BUILD) && ./VTLULToAXILite
+	-@mv -f $(ULITE_BUILD)/sim_ulite.vcd sim_ulite.vcd 2>/dev/null
+
+formal-ulite: $(ULITE_SV)
+	$(MAKE) -C verification/formal ulite
+
+cocotb-ulite: $(ULITE_SV)
+	$(MAKE) -C cocotb ulite
+
+regress: lint lint-decoder lint-widths lint-ulite sim sim-ulite
+regress-ulite: lint-ulite sim-ulite
 
 # --------- Waveforms ---------
 # `wave` runs the sim (refreshing sim.vcd if anything changed) and pops up
@@ -185,9 +234,9 @@ formal: $(SV)
 cocotb: $(SV)
 	$(MAKE) -C cocotb
 
-ci: regress coverage formal cocotb
+ci: regress coverage formal formal-ulite cocotb cocotb-ulite
 
 clean:
-	rm -rf $(GEN_DIR) $(BUILD_DIR) $(COV_DIR) sim.vcd $(COV_INFO) coverage_html target project/target project/project
+	rm -rf $(GEN_DIR) $(BUILD_DIR) $(ULITE_BUILD) $(COV_DIR) sim.vcd sim_ulite.vcd $(COV_INFO) coverage_html target project/target project/project
 	$(MAKE) -C verification/formal clean
-	rm -rf cocotb/sim_build cocotb/__pycache__ cocotb/results.xml cocotb/*.vcd
+	rm -rf cocotb/sim_build cocotb/sim_build_ulite cocotb/__pycache__ cocotb/results.xml cocotb/*.vcd

@@ -42,7 +42,18 @@ object Main extends App {
     EmitConfig.firtoolArgs,
   )
 
-  println(s"Wrote SystemVerilog to $outDir/ and $decoderOutDir/")
+  // TL-UL → AXI4-Lite bridge — Get/Put/PutPartial/Hint, single-beat, 32-bit
+  // default data path.  Emitted into a separate subdirectory so the file
+  // layout mirrors the address-decoded variant and downstream consumers
+  // (lint, formal, cocotb, C++ TB) pick up the right top.
+  val uliteOutDir = s"$outDir/ulite"
+  ChiselStage.emitSystemVerilogFile(
+    new TLULToAXILite(ULBridgeParams()),
+    Array("--target-dir", uliteOutDir),
+    EmitConfig.firtoolArgs,
+  )
+
+  println(s"Wrote SystemVerilog to $outDir/, $decoderOutDir/, and $uliteOutDir/")
 }
 
 object WidthSweep extends App {

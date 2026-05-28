@@ -1,16 +1,18 @@
 # Assertions & Properties — tilelink_to_AXI4
 
-**As of:** 2026-05-27 (atomic ghost added)
+**As of:** 2026-05-28 (added TL-UL → AXI4-Lite variant)
 
-Single catalog of every property used to validate this bridge: formal
-assertions, formal environment assumptions, cover goals, and
-scoreboard-level checks in the testbenches.  Cross-reference this when
-adding new properties so you don't duplicate, and when triaging a failure
-so you can quickly find where a claim is made.
+Single catalog of every property used to validate the bridges in this
+repo — formal assertions, formal environment assumptions, cover goals,
+and scoreboard-level checks in the testbenches.  Cross-reference this
+when adding new properties so you don't duplicate, and when triaging a
+failure so you can quickly find where a claim is made.
 
-The bridge has four execution engines (read, write, hint, atomic).  Most
-properties are stated per-engine.  Atomic-engine coverage in the formal
-wrapper is **on parity with read/write/hint** — see §1 and §2 below.
+Sections §1–§6 cover the **TL-UH → AXI4 bridge** (`TLUHToAXI4`), which
+has four execution engines (read, write, hint, atomic).  Section §7
+covers the sibling **TL-UL → AXI4-Lite bridge** (`TLULToAXILite`), which
+has three engines (read, write, hint) plus a local-error slot and no
+bursts/atomics.
 
 ---
 
@@ -167,14 +169,118 @@ that the bridge produces the right response — failures raise `AssertionError`.
 
 ---
 
+## 7. TL-UL → AXI4-Lite bridge (`TLULToAXILite`)
+
+The sibling AXI4-Lite bridge has a tighter property surface — no bursts,
+no atomics, no read-burst lock — but mirrors the TL-UH catalog where
+the concepts apply.  All formal artifacts live at
+[`verification/formal/tlultoaxilite_props.sv`](../verification/formal/tlultoaxilite_props.sv)
+and the `.sby` script next to it.  Defaults: `dataBits=32`, `sourceBits=4`,
+`sizeBits=2`, `beatSizeLg=2`.
+
+### 7.1 Formal safety assertions (BMC depth 20)
+
+Engine disambiguation: the bridge ties `io_axi_b_ready := tl.d.ready`
+only in `dSelW`, and `io_axi_r_ready := tl.d.ready` only in `dSelR`.
+Defaults are zero elsewhere, so the helper wires `d_from_w`, `d_from_r`,
+`d_from_he` identify which engine the arbiter selected for any D beat,
+independent of opcode/denied combinations.  This is what makes a denied
+`AccessAck` (BRESP error → W) cleanly distinguishable from a denied
+`AccessAck` (local-error → E).
+
+| ID | Property | Engines |
+|----|----------|---------|
+| F2 | `D.source == ghost.xact_source` snapshotted at admission | Read, Write, Hint, Error |
+| F3 | `D.size == ghost.xact_size` snapshotted at admission | Read, Write, Hint, Error |
+| F-UL-1 | `AW.addr[1:0] == AR.addr[1:0] == 0` (beatBytes alignment, default 32-bit data) | AXI side |
+| — | `D.corrupt == 0` for `AccessAck` and `HintAck` | Write, Hint, Error |
+
+**Result:** all pass at BMC depth 20 (`make formal-ulite`).
+
+The TL-UH F6 (AxBURST/AxSIZE) and F-LOCK assertions don't apply: AXI4-Lite
+has no `len`/`size`/`burst`/`lock` fields, so those properties are
+trivially satisfied by the emitted port list (structural invariant —
+verified by inspection at elaboration and by `make lint-ulite`).
+
+### 7.2 Formal cover goals
+
+| ID | Cover goal | Reached |
+|----|------------|---------|
+| C1 | A write transaction completes (`d_from_w`, AccessAck, not denied) | step 6 |
+| C2 | A read transaction completes (`d_from_r`, AccessAckData) | step 6 |
+| C3 | A hint transaction completes (`d_from_he`, HintAck) | step 5 |
+| C4 | A local-error transaction completes (`d_from_he`, denied AccessAck) | step 5 |
+
+**Result:** all four witnesses found by `smtbmc` in the `cover` task.
+
+### 7.3 Formal environment assumptions
+
+| ID | Assumption | Rationale |
+|----|------------|-----------|
+| UL-A0 | `a.valid == 0` during reset | Bridge does not accept A before reset deasserted |
+| UL-A1 | `a.opcode ≤ 5` (PutFull, PutPart, Arith, Logic, Get, Hint) | Reserved opcodes (6, 7) excluded from the formal envelope |
+| UL-A2 | A-channel bits stable while `valid && !ready` | TL master irrevocability |
+| UL-A3 | Single-outstanding per engine: no second Get/Put/Hint of the same opcode while same engine is pending (errors may always re-enter the error slot is single-deep too) | Bridge's per-engine slot is 1-deep |
+| UL-A4 | When `b.valid`, `w_pending` must be true | AXI slave doesn't fabricate write responses |
+| UL-A5 | When `r.valid`, `r_pending` must be true | AXI slave doesn't fabricate read responses |
+| AXI-Lite-B0 | B-channel `resp` stable while `valid && !ready` | AXI4-Lite §B1.1 |
+| AXI-Lite-R0 | R-channel `data`/`resp` stable while `valid && !ready` | AXI4-Lite §B1.1 |
+
+### 7.4 Scoreboard-level checks (Verilator C++ TB)
+
+Run in `make sim-ulite`.  Defined in
+[`test/cpp/tb_ulite.cpp`](../test/cpp/tb_ulite.cpp).
+
+| ID | Check | Scope |
+|----|-------|-------|
+| ULTB-S1 | Per-source FIFO ordering: D response source matches a pending request from that source | Multi-engine concurrency safety |
+| ULTB-S2 | `resp.size == job.req.size` | Size preservation (sim-level F3) |
+| ULTB-S3 | `resp.denied == job.expectDenied` | Error propagation (RRESP/BRESP, unsupported, oversized) |
+| ULTB-S4 | `resp.corrupt == job.expectCorrupt` | Corrupt bit on read errors |
+| ULTB-S5 | `resp.opcode == job.expectOpcode` | D-opcode matches engine type |
+| ULTB-S6 | `AccessAckData.data == ref.beat(address)` | Bridge data-path functional correctness |
+| ULTB-S7 | Every per-source FIFO empty after run (no orphaned expectations) | Completeness |
+| ULTB-S8 | Peak total in-flight transactions tracked and printed (sim achieves 3) | Concurrency exercised |
+
+The AXI4-Lite slave model accepts `AW` and `W` in either order
+(including same-cycle handshake of both), commits to memory once both
+are present, and emits `B`.  Error injection at the same addresses as
+the TL-UH TB (`0xD00` → RRESP=SLVERR, `0xD80` → BRESP=DECERR) so the
+error-handling code paths are exercised identically across the two
+bridges.
+
+### 7.5 Cocotb directed tests (Icarus)
+
+Run in `make cocotb-ulite`.  Defined in
+[`cocotb/test_ulite.py`](../cocotb/test_ulite.py).
+
+| Test | Coverage |
+|------|----------|
+| `test_aligned_put_get` | 32-bit aligned PutFull + Get round-trip |
+| `test_byte_lanes` | size=0 write+read at each byte lane of the 32-bit beat |
+| `test_half_word` | 16-bit writes at both halves of a beat, then full-beat Get |
+| `test_partial_put` | PutPartialData with a custom mask — only middle bytes written |
+| `test_hint` | Hint → HintAck |
+
+### 7.6 Lint
+
+Run in `make lint-ulite`.  Verilator `--lint-only -Wall` with the same
+`UNUSEDSIGNAL`/`UNUSEDPARAM` suppressions used by the TL-UH bridge —
+clean at 0 warnings.
+
+---
+
 ## 8. Known gaps
 
 These are tracked in `doc/PLAN.md` under longer horizon; listing here
 so reviewers see the catalog's edges:
 
-- **F1/F4/F5/F7** still pending — see §1's "Deferred" table.
+- **F1/F4/F5/F7** still pending on the TL-UH bridge — see §1's "Deferred" table.
 - **WSTRB ⊆ mask** is only checked behaviorally by the AXI slave model;
-  no formal assertion.
+  no formal assertion (applies to both bridges).
 - **AXI exclusive-monitor semantics** (EXOKAY vs OKAY discrimination on
-  atomic B-response) are not modelled — the bridge accepts both as
+  atomic B-response) are not modelled — the TL-UH bridge accepts both as
   success, consistent with single-master use.
+- **TL-UL randomized sweep.**  The TL-UL → AXI4-Lite C++ TB has 24
+  directed jobs only; a randomized op-mix sweep would mirror the TL-UH
+  bridge's 100-job random workload.

@@ -1,0 +1,36 @@
+# tlultoaxilite.sby — SymbiYosys proof script for TLULToAXILite
+#
+# Tasks:
+#   bmc   — safety: F2 (per-engine source preservation), F3 (size match),
+#                   F-UL-1 (AW/AR alignment), no-corrupt on AccessAck/HintAck
+#   cover — reachability: C1 AccessAck, C2 AccessAckData, C3 HintAck,
+#                         C4 denied AccessAck (local-error path)
+#
+# Run all : sby -f tlultoaxilite.sby
+# Bmc only: sby -f tlultoaxilite.sby bmc
+# Cov only: sby -f tlultoaxilite.sby cover
+
+[tasks]
+bmc
+cover
+
+[options]
+bmc:   mode bmc
+cover: mode cover
+depth 20
+
+[engines]
+smtbmc
+
+[script]
+read -sv tlultoaxilite_props.sv TLULToAXILite.sv
+hierarchy -top tlultoaxilite_props
+proc
+opt
+memory_map
+flatten
+opt
+
+[files]
+tlultoaxilite_props.sv
+../../generated/ulite/TLULToAXILite.sv

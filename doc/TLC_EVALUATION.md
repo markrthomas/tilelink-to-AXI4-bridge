@@ -15,8 +15,8 @@ TileLink has three conformance levels:
 
 | Level | Channels | Added semantics |
 |---|---|---|
-| TL-UL | A, D       | Uncached, single-beat. |
-| TL-UH | A, D       | Uncached, bursts + atomics + hints (what this bridge speaks). |
+| TL-UL | A, D       | Uncached, single-beat — what `TLULToAXILite` speaks (`doc/DESIGN_SPEC_ULITE.md`). |
+| TL-UH | A, D       | Uncached, bursts + atomics + hints — what `TLUHToAXI4` speaks. |
 | TL-C  | A, B, C, D, E | Coherent: probes, permissions, dirty writebacks. |
 
 Moving to TL-C is not "TL-UH plus a few opcodes" — it is a separate
