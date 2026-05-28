@@ -1,17 +1,5 @@
 # TLUHToAXI4 build / sim / lint / coverage
-#   make sim         — elab + build + run the Verilator TB (default)
-#   make lint        — Verilator --lint-only on the emitted SV
-#   make regress     — lint + sim (DV_STANDARDS fast CI gate)
-#   make coverage    — Verilator --coverage build + coverage.info
-#   make formal      — SymbiYosys BMC + cover (verification/formal/)
-#   make cocotb      — cocotb directed tests on Icarus (cocotb/)
-#   make ci          — regress + coverage + formal + cocotb
-#   make elab        — Chisel -> SystemVerilog into generated/
-#   make build       — Verilator TB build (no run)
-#   make wave        — run sim then open sim.vcd in GTKWave
-#   make wave-formal — open the formal cover witness in GTKWave
-#   make wave-bmc    — open the BMC counter-example (if present)
-#   make clean       — wipe every generated artifact
+# Run `make` with no arguments to print the target list.
 
 SHELL := /bin/bash
 
@@ -72,7 +60,7 @@ COV_FLAGS := \
     -Mdir $(COV_DIR) \
     -CFLAGS "-std=c++17 -O2"
 
-.PHONY: all elab elab-widths build sim run lint lint-decoder lint-widths regress coverage cov-report formal cocotb wave wave-formal wave-bmc ci clean
+.PHONY: help all elab elab-widths build sim run lint lint-decoder lint-widths regress coverage cov-report formal cocotb wave wave-formal wave-bmc ci clean
 
 # ---- Waveform viewer ----
 # Override on the command line, e.g. `make wave WAVE_VIEWER=surfer`.
@@ -81,6 +69,32 @@ WAVE_VIEWER ?= gtkwave
 WAVE_FILE   ?= sim.vcd
 BMC_TRACE   := verification/formal/tluhtoaxi4_bmc/engine_0/trace.vcd
 COVER_TRACE := verification/formal/tluhtoaxi4_cover/engine_0/trace0.vcd
+
+.DEFAULT_GOAL := help
+
+help:
+	@echo "TLUHToAXI4 — available targets:"
+	@echo ""
+	@echo "  elab          Chisel -> SystemVerilog into generated/"
+	@echo "  elab-widths   Elaborate the parameterized data-width sweep"
+	@echo "  build         Verilator TB build (no run)"
+	@echo "  sim           elab + build + run the Verilator TB"
+	@echo "  run           alias for sim"
+	@echo "  lint          Verilator --lint-only on the emitted SV"
+	@echo "  lint-decoder  Lint the address-decoded bridge variant"
+	@echo "  lint-widths   Lint each dataBits in the width sweep"
+	@echo "  regress       lint + lint-decoder + lint-widths + sim (CI gate)"
+	@echo "  coverage      Verilator --coverage build + coverage.info"
+	@echo "  cov-report    Coverage + HTML report via genhtml (lcov)"
+	@echo "  formal        SymbiYosys BMC + cover (verification/formal/)"
+	@echo "  cocotb        cocotb directed tests on Icarus (cocotb/)"
+	@echo "  wave          run sim then open sim.vcd in GTKWave"
+	@echo "  wave-formal   open the formal cover witness in GTKWave"
+	@echo "  wave-bmc      open the BMC counter-example (if present)"
+	@echo "  ci            regress + coverage + formal + cocotb"
+	@echo "  clean         wipe every generated artifact"
+	@echo ""
+	@echo "Overrides: WAVE_VIEWER=surfer  WAVE_FILE=path/to.vcd"
 
 all: sim
 
