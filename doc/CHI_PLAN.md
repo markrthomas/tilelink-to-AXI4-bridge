@@ -1,6 +1,6 @@
 # TL-C → CHI Bridge — Staged Implementation Plan
 
-**Status:** Stages 1–3 landed 2026-05-29; Stages 4–7 pending.
+**Status:** Stages 1–4 landed 2026-05-29; Stages 5–7 pending.
 **As of:** 2026-05-29
 **Direction:** TL-C upstream → CHI Issue-E downstream
 **Module name:** `TLCToCHI`
@@ -131,24 +131,57 @@ is purely opcode/needsData selection at A.fire.
 - `make regress` PASS — TLUH 183 jobs, ULite 24, UC 11, CHI 4; all
   lints clean.
 
-### Stage 4 — Release path
+### ~~Stage 4 — Release path~~ ✓ DONE 2026-05-29
 
 Writes data back to memory through the CHI side.
 
-**Mapping**
+**Mapping (as landed — refined from the original draft for CHI sanity)**
 | TL | CHI |
 |---|---|
-| `Release(TtoB)` | `WriteCleanFull` |
-| `Release(TtoN, clean)` | `Evict` |
-| `ReleaseData(TtoN)` | `WriteBackFull` |
-| `Release(BtoN)` | `Evict` |
-| `ReleaseData(TtoB)` | `WriteCleanFull` (with data) |
-| RSP `Comp` for WriteBack* / WriteClean* | TL-D `ReleaseAck` |
+| `Release(*)`             | `Evict`          |
+| `ReleaseData(TtoN)`      | `WriteBackFull`  |
+| `ReleaseData(TtoB)`      | `WriteCleanFull` |
+| RSP `Comp` (for Evict)   | TL-D `ReleaseAck` |
+| RSP `CompDBIDResp` → DAT `CopyBackWrData` → TL-D `ReleaseAck` (for WriteBack/Clean) | |
 
-**Verification additions**
-- Directed Release tests for every (current, target) permission pair
-- Formal: F-CHI-4 (every Release path produces exactly one ReleaseAck),
-  F-CHI-5 (data preservation across WriteBack → ReadShared roundtrip)
+The original draft mapped `Release(TtoB) → WriteCleanFull (no data)`,
+which is semantically nonsensical in CHI (WriteCleanFull always carries
+data — it writes a dirty line back while retaining a clean copy).  The
+implemented mapping uses `Release → Evict` regardless of param: a clean
+downgrade has nothing to write back, so a silent Evict is the only
+correct CHI representation.  `ReleaseData` carries dirty data and
+routes through `WriteBackFull` (drop to I) or `WriteCleanFull`
+(retain as SC) based on target permission.
+
+**Deliverables (all landed)**
+- Release engine in `TLCToCHI.scala` parallel to the acquire engine.
+  5-state FSM (Idle → REQ → Rsp → DAT → Ack).  TxnID partition:
+  acquire uses `{1'b0, source}`, release uses `{1'b1, source}` — keeps
+  the two engines disjoint on the shared CHI rxrsp channel.
+- C-channel intake: Release (no data) fires C in idle; ReleaseData
+  snapshots in idle then forwards beats in DAT after the HN returns
+  `CompDBIDResp`.
+- TXDAT: `CopyBackWrData` beats with the HN-issued dbID; `resp` = SC
+  for WriteCleanFull, I for WriteBackFull.
+- D-channel arbitration: acquire-first priority; `ReleaseAck` issued
+  from the release engine when in sRelAck.
+- TB extension (`test/cpp/tb_chi.cpp`): TL-C driver, txdat collector,
+  CHI HN model serves `Comp` for Evict and `CompDBIDResp` + 8-beat
+  data collection for WriteBack/Clean.  4 new directed release jobs
+  (Release TtoN, Release BtoN, ReleaseData TtoN, ReleaseData TtoB).
+- Cocotb: new `test_release_mixed` covers all four release cases on
+  Icarus.
+- Formal additions (`tlctochi_props.sv`): F-CHI-1 extended with the
+  release mapping, F-CHI-4 (txdat fires only with a release in
+  flight, opcode = CopyBackWrData), F-CHI-5 (txnID partition — REQ
+  opcodes match their txnID MSB).  Cover goals added for ReleaseAck,
+  CopyBackWrData, Evict REQ, and WriteBackFull REQ.
+
+**Exit criteria met**
+- `make sim-chi` PASS: 8 directed jobs total (4 acquires + 4 releases).
+- `make formal-chi` BMC depth 20 PASS, all 6 cover goals reached.
+- `make cocotb-chi` PASS: 2 tests.
+- `make regress` PASS with no regression.
 
 ### Stage 5 — Snoop path *(hardest)*
 
@@ -300,31 +333,35 @@ doc/
 
 ## 8. Status & next step
 
-**Stages 1–3 landed 2026-05-29.**  Skeleton + spec + Makefile slot
-(Stage 1), then the full read path covering NtoB / NtoT / BtoT /
-AcquirePerm in a single acquire engine (Stages 2 & 3 collapsed into
-one delivery since the divergence is opcode-selection-only).
+**Stages 1–4 landed 2026-05-29.**  Read path (Stages 1–3) and
+release path (Stage 4) both shipped in the same day.  TxnID
+partition (`{1'b0, src}` for acquires, `{1'b1, src}` for releases)
+keeps the engines disjoint and forms the basis for F-CHI-5 in
+formal.
 
 The four open questions in §2 were settled as follows:
 1. **DCT/DMT:** off for Stage 1; revisit at Stage 5.
-2. **CHI HN model:** hand-rolled from the spec (landed in Stage 3
-   at `test/cpp/tb_chi.cpp` and `cocotb/env_chi.py`).
+2. **CHI HN model:** hand-rolled from the spec.  TB and cocotb
+   harness both serve full Issue-E semantics for the opcodes
+   exercised so far (Read*, MakeUnique, Evict, WriteBack/Clean).
 3. **Multi-line atomics:** confirmed disallowed — bridge will enforce
    `a.size ≤ log2(lineBytes)` for atomics at elaboration.
 4. **Cache line:** pinned at 64 B.
 
-**Next step is a separate go-ahead** to start Stage 4 (release path:
-`Release(TtoB)` → `WriteCleanFull`, `ReleaseData(TtoN)` →
-`WriteBackFull`, `Release(TtoN, clean)` / `Release(BtoN)` →
-`Evict`, with CHI `Comp` → TL `ReleaseAck`).  Budget: 3 weeks.
+**Next step is a separate go-ahead** to start Stage 5 (snoop path:
+CHI `Snp*` → TL-B `Probe`, with TL-C `ProbeAck` / `ProbeAckData`
+fed back as CHI `SnpResp` / `SnpRespData`).  This is the biggest
+stage by budget (4 weeks) and the one where the canonical TL-C
+deadlock pits live (probe ↔ release race, CHI hazard rules).
 Will need:
-- A release engine in `TLCToCHI.scala` parallel to the existing
-  acquire engine (C-channel intake + REQ issue + DAT write + RSP
-  consumption + D-channel `ReleaseAck`).
-- TL master driver extension in `tb_chi.cpp` and `env_chi.py` to
-  emit C-channel Release / ReleaseData traffic and consume the
-  resulting D-channel `ReleaseAck`.
-- F-CHI-4 (every Release path produces exactly one ReleaseAck)
-  and F-CHI-5 (data preservation across WriteBack → ReadShared
-  roundtrip).
+- Probe engine in `TLCToCHI.scala`: SNP intake, TL-B issue, TL-C
+  ProbeAck/ProbeAckData consumption, CHI SnpResp/SnpRespData
+  issue.
+- Probe ↔ release race resolution: if a TL master issues a Release
+  for a line under active CHI snoop, collapse the probe and answer
+  the snoop with the released state.
+- F-CHI-6..8 (probe-snoop conservation, no spurious probes,
+  probe-release race resolved deterministically).
+- TB extension with a CHI HN snooper that issues snoops at
+  configurable delay relative to acquire grants.
 - One cocotb test (`test_acquire_ntob`) and 5+ directed C++ jobs.

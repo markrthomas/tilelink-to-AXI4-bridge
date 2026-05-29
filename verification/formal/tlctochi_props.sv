@@ -357,87 +357,173 @@ module tlctochi_props (
     // Assumptions
     // -----------------------------------------------------------------
     //   Only legal TL-A acquire opcodes (AcquireBlock=6, AcquirePerm=7)
-    //   and legal params (NtoB=0, NtoT=1, BtoT=2).  Channel-stability is
-    //   modeled by snapshotting A.bits at A.fire below — no explicit
-    //   stable-until-ready assumption needed for the post-fire path.
+    //   and legal params (NtoB=0, NtoT=1, BtoT=2).
     always @(*) if (io_tl_a_valid) begin
         assume (io_tl_a_bits_opcode == 3'd6 || io_tl_a_bits_opcode == 3'd7);
         assume (io_tl_a_bits_param  <= 3'd2);
     end
+    //   Only legal TL-C release opcodes (Release=6, ReleaseData=7) and
+    //   legal params (TtoB=0, TtoN=1, BtoN=2).  ProbeAck variants
+    //   (4,5) are Stage 5 territory and tied off here.
+    always @(*) if (io_tl_c_valid) begin
+        assume (io_tl_c_bits_opcode == 3'd6 || io_tl_c_bits_opcode == 3'd7);
+        assume (io_tl_c_bits_param  <= 3'd2);
+    end
     //   Assume downstream always ready (open-loop bridge view).
     always @(*) assume (io_chi_txreq_ready);
     always @(*) assume (io_chi_txrsp_ready);
+    always @(*) assume (io_chi_txdat_ready);
 
     // -----------------------------------------------------------------
-    // Snapshot A.bits at A.fire — this is the queued transaction.  The
-    // bridge holds a single in-flight acquire, so a single snapshot is
-    // sufficient.
+    // Channel handshake wires
     // -----------------------------------------------------------------
     wire a_fire    = io_tl_a_valid    && io_tl_a_ready;
+    wire c_fire    = io_tl_c_valid    && io_tl_c_ready;
     wire req_fire  = io_chi_txreq_valid && io_chi_txreq_ready;
     wire d_fire    = io_tl_d_valid    && io_tl_d_ready;
     wire txrsp_fire= io_chi_txrsp_valid && io_chi_txrsp_ready;
     wire e_fire    = io_tl_e_valid    && io_tl_e_ready;
 
-    reg        snap_valid;
-    reg [2:0]  snap_opcode;
-    reg [2:0]  snap_param;
-    reg [3:0]  snap_source;
-    initial snap_valid = 1'b0;
+    wire d_is_releaseack = (io_tl_d_bits_opcode == 3'd6);
+    wire d_is_grantdata  = (io_tl_d_bits_opcode == 3'd5);
+    wire d_is_grant      = (io_tl_d_bits_opcode == 3'd4);
+    wire req_is_rel      = io_chi_txreq_bits_txnID[7];  // txnID MSB
+
+    // -----------------------------------------------------------------
+    // Acquire snapshot — latched at A.fire, cleared at CompAck.
+    // -----------------------------------------------------------------
+    reg        acq_snap_valid;
+    reg [2:0]  acq_snap_opcode;
+    reg [2:0]  acq_snap_param;
+    reg [3:0]  acq_snap_source;
+    initial acq_snap_valid = 1'b0;
     always @(posedge clock) begin
-        if (reset) snap_valid <= 1'b0;
+        if (reset) acq_snap_valid <= 1'b0;
         else if (a_fire) begin
-            snap_valid  <= 1'b1;
-            snap_opcode <= io_tl_a_bits_opcode;
-            snap_param  <= io_tl_a_bits_param;
-            snap_source <= io_tl_a_bits_source;
+            acq_snap_valid  <= 1'b1;
+            acq_snap_opcode <= io_tl_a_bits_opcode;
+            acq_snap_param  <= io_tl_a_bits_param;
+            acq_snap_source <= io_tl_a_bits_source;
         end else if (txrsp_fire) begin
-            snap_valid  <= 1'b0;
+            acq_snap_valid  <= 1'b0;
+        end
+    end
+
+    // -----------------------------------------------------------------
+    // Release snapshot — latched on first C-beat of a release (when no
+    // release is already in flight).  Cleared on ReleaseAck D.fire.
+    // -----------------------------------------------------------------
+    reg        rel_snap_valid;
+    reg [2:0]  rel_snap_opcode;
+    reg [2:0]  rel_snap_param;
+    reg [3:0]  rel_snap_source;
+    initial rel_snap_valid = 1'b0;
+    always @(posedge clock) begin
+        if (reset) rel_snap_valid <= 1'b0;
+        else begin
+            if (!rel_snap_valid && io_tl_c_valid) begin
+                rel_snap_valid  <= 1'b1;
+                rel_snap_opcode <= io_tl_c_bits_opcode;
+                rel_snap_param  <= io_tl_c_bits_param;
+                rel_snap_source <= io_tl_c_bits_source;
+            end
+            if (d_fire && d_is_releaseack) begin
+                rel_snap_valid <= 1'b0;
+            end
         end
     end
 
     // -----------------------------------------------------------------
     // F-CHI-1: REQ opcode matches snapshot's {opcode, param}.
-    //   AcquireBlock(NtoB) -> ReadShared (0x01)
-    //   AcquireBlock(NtoT) -> ReadUnique (0x07)
-    //   AcquireBlock(BtoT) -> MakeUnique (0x0C)
-    //   AcquirePerm(*)     -> MakeUnique (0x0C)
+    //   Acquire side (txnID[7]==0):
+    //     AcquireBlock(NtoB) -> ReadShared (0x01)
+    //     AcquireBlock(NtoT) -> ReadUnique (0x07)
+    //     AcquireBlock(BtoT) -> MakeUnique (0x0C)
+    //     AcquirePerm(*)     -> MakeUnique (0x0C)
+    //   Release side (txnID[7]==1):
+    //     Release             -> Evict        (0x0D)
+    //     ReleaseData(TtoN)   -> WriteBackFull(0x1D)
+    //     ReleaseData(TtoB)   -> WriteCleanFull(0x19)
     // -----------------------------------------------------------------
-    always @(*) if (chk && req_fire) begin
-        assert (snap_valid);
-        if (snap_opcode == 3'd7)
+    always @(*) if (chk && req_fire && !req_is_rel) begin
+        assert (acq_snap_valid);
+        if (acq_snap_opcode == 3'd7)
             assert (io_chi_txreq_bits_opcode == 7'h0C);
-        else if (snap_param == 3'd0)
+        else if (acq_snap_param == 3'd0)
             assert (io_chi_txreq_bits_opcode == 7'h01);
-        else if (snap_param == 3'd1)
+        else if (acq_snap_param == 3'd1)
             assert (io_chi_txreq_bits_opcode == 7'h07);
         else
             assert (io_chi_txreq_bits_opcode == 7'h0C);
     end
 
-    // -----------------------------------------------------------------
-    // F-CHI-2: CompAck txnID equals snapshot.source.
-    // -----------------------------------------------------------------
-    always @(*) if (chk && txrsp_fire) begin
-        assert (io_chi_txrsp_bits_opcode == 5'h02); // CompAck
-        assert (snap_valid);
-        assert (io_chi_txrsp_bits_txnID == {4'b0, snap_source});
+    always @(*) if (chk && req_fire && req_is_rel) begin
+        assert (rel_snap_valid);
+        if (rel_snap_opcode == 3'd6)
+            assert (io_chi_txreq_bits_opcode == 7'h0D);
+        else if (rel_snap_param == 3'd0)
+            assert (io_chi_txreq_bits_opcode == 7'h19);
+        else
+            assert (io_chi_txreq_bits_opcode == 7'h1D);
     end
 
     // -----------------------------------------------------------------
-    // F-CHI-3: GrantData/Grant.param consistent with CHI resp.
-    //   In sAcqDAT, D.param reflects rxdat.resp; in sAcqRSP, rxrsp.resp.
-    //   The bridge maps UC/UD -> toT, SC/SD -> toB.
-    //   We assert: on D.fire, D.param == toT iff one of those holds.
+    // F-CHI-2: CompAck txnID equals acquire snapshot.source.
     // -----------------------------------------------------------------
-    always @(*) if (chk && d_fire) begin
-        assert (io_tl_d_bits_source == snap_source);
+    always @(*) if (chk && txrsp_fire) begin
+        assert (io_chi_txrsp_bits_opcode == 5'h02); // CompAck
+        assert (acq_snap_valid);
+        assert (io_chi_txrsp_bits_txnID == {4'b0, acq_snap_source});
+    end
+
+    // -----------------------------------------------------------------
+    // F-CHI-3: D-channel routing.  Grant/GrantData routed from acquire
+    // snapshot; ReleaseAck routed from release snapshot.
+    // -----------------------------------------------------------------
+    always @(*) if (chk && d_fire && (d_is_grant || d_is_grantdata)) begin
+        assert (acq_snap_valid);
+        assert (io_tl_d_bits_source == acq_snap_source);
+    end
+    always @(*) if (chk && d_fire && d_is_releaseack) begin
+        assert (rel_snap_valid);
+        assert (io_tl_d_bits_source == rel_snap_source);
+    end
+
+    // -----------------------------------------------------------------
+    // F-CHI-4: Release txdat (CopyBackWrData) only fires while a
+    // release snapshot is in flight.  Guards against spurious writes.
+    // -----------------------------------------------------------------
+    wire txdat_fire = io_chi_txdat_valid && io_chi_txdat_ready;
+    always @(*) if (chk && txdat_fire) begin
+        assert (rel_snap_valid);
+        assert (io_chi_txdat_bits_opcode == 4'h2); // CopyBackWrData
+    end
+
+    // -----------------------------------------------------------------
+    // F-CHI-5: txnID partition — acquire REQs always carry txnID[7]=0,
+    // release REQs always carry txnID[7]=1.  No collisions possible.
+    // -----------------------------------------------------------------
+    always @(*) if (chk && req_fire && !req_is_rel) begin
+        // Acquire REQ opcodes
+        assert (io_chi_txreq_bits_opcode == 7'h01 ||
+                io_chi_txreq_bits_opcode == 7'h07 ||
+                io_chi_txreq_bits_opcode == 7'h0C);
+    end
+    always @(*) if (chk && req_fire && req_is_rel) begin
+        // Release REQ opcodes
+        assert (io_chi_txreq_bits_opcode == 7'h0D ||
+                io_chi_txreq_bits_opcode == 7'h19 ||
+                io_chi_txreq_bits_opcode == 7'h1D);
     end
 
     // -----------------------------------------------------------------
     // Cover goals
     // -----------------------------------------------------------------
-    always @(*) cover (chk && d_fire && io_tl_d_bits_opcode == 3'd4); // Grant
-    always @(*) cover (chk && d_fire && io_tl_d_bits_opcode == 3'd5); // GrantData
+    always @(*) cover (chk && d_fire && d_is_grant);       // Grant
+    always @(*) cover (chk && d_fire && d_is_grantdata);   // GrantData
+    always @(*) cover (chk && d_fire && d_is_releaseack);  // ReleaseAck
+    always @(*) cover (chk && txdat_fire);                  // CopyBackWrData
+    always @(*) cover (chk && req_fire && io_chi_txreq_bits_opcode == 7'h0D); // Evict
+    always @(*) cover (chk && req_fire && io_chi_txreq_bits_opcode == 7'h1D); // WriteBackFull
 
 endmodule
