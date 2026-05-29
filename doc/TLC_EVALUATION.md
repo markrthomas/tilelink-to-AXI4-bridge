@@ -1,7 +1,19 @@
 # TL-C Evaluation — why this bridge stays on TileLink-UH
 
-**As of:** 2026-05-27
-**Decision:** stay on TL-UH; do not extend the bridge to TL-C.
+**As of:** 2026-05-27 (original); reopened 2026-05-28
+**Decision:** stay on TL-UH for the AXI4 bridges; **separately**, a
+sibling TL-C → CHI bridge has been planned — see
+[`CHI_PLAN.md`](CHI_PLAN.md).
+
+> **Status update (2026-05-28).**  The "stay on TL-UH" verdict is still
+> correct *for the AXI4 path* — see the "Why AXI4 makes TL-C
+> semantically unhelpful here" section below; nothing about AXI4 has
+> changed.  A separate decision was made to add a **third sibling
+> bridge** translating TL-C → CHI, where coherence semantics map
+> naturally to the downstream protocol.  The TL-C → CHI work does not
+> change the AXI4 bridges, which remain on TL-UH; it adds a new
+> coherent path alongside them.  See [`CHI_PLAN.md`](CHI_PLAN.md) for
+> the staged roadmap.
 
 This memo exists so future readers do not have to re-litigate the
 question.  The decision is reversible if the downstream world changes,
@@ -116,3 +128,14 @@ true:
 Until then, the TL-UH bridge is the right shape.  The atomic engine
 already covers the synchronization use cases that come up in single-host
 designs.
+
+---
+
+## Reopen log
+
+- **2026-05-28** — added [`CHI_PLAN.md`](CHI_PLAN.md), a separate
+  staged plan for a TL-C → CHI bridge sibling.  The AXI4 bridges remain
+  on TL-UH; the CHI bridge addresses the third "consumer requests
+  probe-based invalidation / host adopts coherent interconnect" trigger
+  by routing coherent traffic to a coherent downstream protocol instead
+  of trying to bolt coherence onto AXI4.
