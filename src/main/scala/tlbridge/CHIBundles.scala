@@ -93,6 +93,22 @@ object CHIOpcode {
   val WriteBackFull  = 0x1D.U(7.W)
   val WriteNoSnpPtl  = 0x1E.U(7.W)
   val WriteNoSnpFull = 0x1F.U(7.W)
+  // Atomics (Issue-B+).  Low 3 bits of the Store/Load forms select the
+  // ALU op: ADD=0, CLR=1, EOR=2, SET=3, SMAX=4, SMIN=5, UMAX=6, UMIN=7.
+  // AtomicStore returns no data; AtomicLoad returns the pre-op value
+  // (which is what TileLink's Arithmetic/Logical atomics expect back).
+  val AtomicStore    = 0x40.U(7.W)   // 0x40..0x47
+  val AtomicLoad     = 0x48.U(7.W)   // 0x48..0x4F
+  val AtomicLoadAdd  = 0x48.U(7.W)
+  val AtomicLoadClr  = 0x49.U(7.W)
+  val AtomicLoadEor  = 0x4A.U(7.W)
+  val AtomicLoadSet  = 0x4B.U(7.W)
+  val AtomicLoadSmax = 0x4C.U(7.W)
+  val AtomicLoadSmin = 0x4D.U(7.W)
+  val AtomicLoadUmax = 0x4E.U(7.W)
+  val AtomicLoadUmin = 0x4F.U(7.W)
+  val AtomicSwap     = 0x50.U(7.W)
+  val AtomicCompare  = 0x51.U(7.W)
 
   // RSP (5-bit opcode space).
   val RspLCrdReturn  = 0x00.U(5.W)

@@ -27,12 +27,24 @@ static constexpr int LINE_BYTES   = 64;
 static constexpr int BEATS_PER_LINE = LINE_BYTES / BEAT_BYTES; // 8
 
 // CHI REQ opcodes
+static constexpr int REQ_ReadOnce       = 0x03;
 static constexpr int REQ_ReadShared     = 0x01;
 static constexpr int REQ_ReadUnique     = 0x07;
+static constexpr int REQ_CleanShared    = 0x08;
+static constexpr int REQ_CleanInvalid   = 0x09;
 static constexpr int REQ_MakeUnique     = 0x0C;
 static constexpr int REQ_Evict          = 0x0D;
 static constexpr int REQ_WriteCleanFull = 0x19;
+static constexpr int REQ_WriteUniquePtl = 0x1A;
+static constexpr int REQ_WriteUniqueFull= 0x1B;
 static constexpr int REQ_WriteBackFull  = 0x1D;
+static constexpr int REQ_AtomicLoadAdd  = 0x48;
+static constexpr int REQ_AtomicLoadClr  = 0x49;
+static constexpr int REQ_AtomicLoadEor  = 0x4A;
+static constexpr int REQ_AtomicLoadSet  = 0x4B;
+static constexpr int REQ_AtomicLoadSmax = 0x4C;
+static constexpr int REQ_AtomicLoadSmin = 0x4D;
+static constexpr int REQ_AtomicSwap     = 0x50;
 // CHI RSP opcodes
 static constexpr int RSP_SnpResp        = 0x01;
 static constexpr int RSP_CompAck        = 0x02;
@@ -42,6 +54,7 @@ static constexpr int RSP_DBIDResp       = 0x06;
 // CHI DAT opcodes
 static constexpr int DAT_SnpRespData    = 0x01;
 static constexpr int DAT_CopyBackWrData = 0x02;
+static constexpr int DAT_NonCopyBackWr  = 0x03;
 static constexpr int DAT_CompData       = 0x04;
 // CHI SNP opcodes
 static constexpr int SNP_SnpShared      = 0x01;
@@ -52,8 +65,19 @@ static constexpr int CHI_SC             = 0x1;
 static constexpr int CHI_UC             = 0x2;
 
 // TL A opcodes
+static constexpr int OP_PutFull     = 0;
+static constexpr int OP_PutPartial  = 1;
+static constexpr int OP_Arithmetic  = 2;
+static constexpr int OP_Logical     = 3;
+static constexpr int OP_Get         = 4;
+static constexpr int OP_Hint        = 5;
 static constexpr int OP_AcqBlock    = 6;
 static constexpr int OP_AcqPerm     = 7;
+// TL A atomic params: arithmetic MIN/MAX/MINU/MAXU/ADD; logical XOR/OR/AND/SWAP
+static constexpr int A_MIN=0, A_MAX=1, A_MINU=2, A_MAXU=3, A_ADD=4;
+static constexpr int L_XOR=0, L_OR=1, L_AND=2, L_SWAP=3;
+// TL Hint params
+static constexpr int H_PrefetchRead=0, H_PrefetchWrite=1;
 // TL B opcodes
 static constexpr int OP_Probe       = 6;
 // TL C opcodes
@@ -62,6 +86,9 @@ static constexpr int OP_ProbeAckData = 5;
 static constexpr int OP_Release      = 6;
 static constexpr int OP_ReleaseData  = 7;
 // TL D opcodes
+static constexpr int D_AccessAck     = 0;
+static constexpr int D_AccessAckData = 1;
+static constexpr int D_HintAck       = 2;
 static constexpr int D_GrantData     = 5;
 static constexpr int D_Grant         = 4;
 static constexpr int D_ReleaseAck    = 6;
@@ -94,6 +121,8 @@ struct TLAReq {
     int size;
     int source;
     uint64_t address;
+    std::vector<uint64_t> data;  // write data / operand (Put, Atomic); empty otherwise
+    std::vector<uint64_t> mask;  // byte-enables per beat; defaults to all-ones if empty
 };
 
 struct TLCReq {
@@ -123,6 +152,7 @@ public:
 
     bool aActive = false;
     TLAReq aCur;
+    int  aBeatIdx = 0;
 
     bool cActive = false;
     TLCReq cCur;
@@ -133,11 +163,12 @@ public:
     int dBeatIdx = 0;
 
     void drive(VTLCToCHI* dut) {
-        // ---- A ----
+        // ---- A ---- (supports multi-beat write data for Put/Atomic)
         if (!aActive && !aQ.empty()) {
             aCur = aQ.front();
             aQ.pop_front();
             aActive = true;
+            aBeatIdx = 0;
         }
         if (aActive) {
             dut->io_tl_a_valid = 1;
@@ -146,6 +177,10 @@ public:
             dut->io_tl_a_bits_size = aCur.size;
             dut->io_tl_a_bits_source = aCur.source;
             dut->io_tl_a_bits_address = aCur.address;
+            dut->io_tl_a_bits_data = aCur.data.empty() ? 0 : aCur.data[aBeatIdx];
+            uint64_t m = 0xFFULL;
+            if (!aCur.mask.empty()) m = aCur.mask[aBeatIdx];
+            dut->io_tl_a_bits_mask = m;
         } else {
             dut->io_tl_a_valid = 0;
         }
@@ -180,9 +215,11 @@ public:
 
     void sample(VTLCToCHI* dut) {
         if (aActive && dut->io_tl_a_valid && dut->io_tl_a_ready) {
-            std::printf("  A.fire: op=%d param=%d source=%d time=%ld\n",
-                        aCur.opcode, aCur.param, aCur.source, main_time);
-            aActive = false;
+            int aBeats = aCur.data.empty() ? 1 : (int)aCur.data.size();
+            std::printf("  A.fire #%d: op=%d param=%d source=%d time=%ld\n",
+                        aBeatIdx + 1, aCur.opcode, aCur.param, aCur.source, main_time);
+            aBeatIdx++;
+            if (aBeatIdx >= aBeats) aActive = false;
         }
         // Probe.fire on TL-B: pull a pre-loaded response off probeRsp and
         // enqueue it for C.  The response includes opcode (ProbeAck or
@@ -218,12 +255,14 @@ public:
                 dCur.data.clear();
                 dBeatIdx = 0;
             }
-            if (dCur.opcode == D_GrantData) dCur.data.push_back(dut->io_tl_d_bits_data);
+            bool dHasData = (dCur.opcode == D_GrantData) || (dCur.opcode == D_AccessAckData);
+            if (dHasData) dCur.data.push_back(dut->io_tl_d_bits_data);
             dBeatIdx++;
-            std::printf("  D.fire #%d: opcode=%d source=%d param=%d time=%ld\n",
-                        dBeatIdx, dCur.opcode, dCur.source, dCur.param, main_time);
+            std::printf("  D.fire #%d: opcode=%d source=%d param=%d data=0x%016lx time=%ld\n",
+                        dBeatIdx, dCur.opcode, dCur.source, dCur.param,
+                        (unsigned long)dut->io_tl_d_bits_data, main_time);
 
-            int totalBeats = (dCur.opcode == D_GrantData)
+            int totalBeats = dHasData
                 ? ((1 << dut->io_tl_d_bits_size) / BEAT_BYTES)
                 : 1;
             if (totalBeats < 1) totalBeats = 1;
@@ -278,14 +317,36 @@ struct CHISnpResult {
     std::vector<uint64_t> data;
 };
 
+// Uncached / atomic transaction (Get/Put/Hint/Atomic).
+struct CHIUncTxn {
+    int txnID;
+    int reqOp;             // CHI REQ opcode observed
+    int beats;             // data beats (read-return or write)
+    bool isRead = false;   // ReadOnce / Atomic -> HN sends CompData
+    bool isWrite = false;  // Put / Atomic     -> HN expects NonCopyBackWrData
+    bool isHint = false;   // CMO              -> HN sends Comp only
+    bool isAtomic = false;
+    int dbID = 0;
+    int rbeatsLeft = 0;    // CompData beats still to send
+    int wbeatsSeen = 0;    // NonCopyBackWrData beats received
+    bool dbidSent = false;
+    bool complete = false;
+    std::vector<uint64_t> retData;   // value(s) returned via CompData
+    std::vector<uint64_t> wdata;     // operand / write data received
+    std::vector<uint64_t> wbe;       // byte-enables received
+};
+
 class CHIHN {
 public:
     std::map<int, CHIReadTxn> activeReads;
     std::map<int, CHIRelTxn>  activeReleases;
     std::map<int, CHISnpResult> snpResults;
+    std::map<int, CHIUncTxn>  activeUnc;
     std::deque<int>           dataQueue;    // for CompData (read path)
     std::deque<int>           rxrspQueue;   // for Comp (acquire-perm path)
     std::deque<int>           rxrspRelQueue; // for CompDBIDResp / Comp (release path)
+    std::deque<int>           uncRxrspQueue; // for CompDBIDResp / Comp / DBIDResp (uncached)
+    std::deque<int>           uncDataQueue;  // for CompData (Get / Atomic return)
     std::deque<CHISnpInject>  snpInjectQueue; // pending snoops to drive on rxsnp
     int nextDBID = 1;
 
@@ -294,7 +355,7 @@ public:
         dut->io_chi_txrsp_ready = 1;
         dut->io_chi_txdat_ready = 1;
 
-        // CompData (read)
+        // CompData — acquire reads first, then uncached (Get / Atomic).
         if (!dataQueue.empty()) {
             int tid = dataQueue.front();
             CHIReadTxn &tx = activeReads[tid];
@@ -304,6 +365,16 @@ public:
             dut->io_chi_rxdat_bits_data = tx.data[BEATS_PER_LINE - tx.beatsLeft];
             dut->io_chi_rxdat_bits_resp = (tx.opcode == REQ_ReadUnique) ? CHI_UC : CHI_SC;
             dut->io_chi_rxdat_bits_dataID = BEATS_PER_LINE - tx.beatsLeft;
+        } else if (!uncDataQueue.empty()) {
+            int tid = uncDataQueue.front();
+            CHIUncTxn &tx = activeUnc[tid];
+            int idx = tx.beats - tx.rbeatsLeft;
+            dut->io_chi_rxdat_valid = 1;
+            dut->io_chi_rxdat_bits_opcode = DAT_CompData;
+            dut->io_chi_rxdat_bits_txnID = tid;
+            dut->io_chi_rxdat_bits_data = tx.retData[idx];
+            dut->io_chi_rxdat_bits_resp = CHI_UC;
+            dut->io_chi_rxdat_bits_dataID = idx;
         } else {
             dut->io_chi_rxdat_valid = 0;
         }
@@ -331,6 +402,20 @@ public:
             dut->io_chi_rxrsp_bits_txnID = tid;
             dut->io_chi_rxrsp_bits_resp = CHI_UC;
             dut->io_chi_rxrsp_bits_dbID = 0;
+        } else if (!uncRxrspQueue.empty()) {
+            int tid = uncRxrspQueue.front();
+            CHIUncTxn &tx = activeUnc[tid];
+            dut->io_chi_rxrsp_valid = 1;
+            dut->io_chi_rxrsp_bits_txnID = tid;
+            dut->io_chi_rxrsp_bits_dbID = tx.dbID;
+            dut->io_chi_rxrsp_bits_resp = CHI_I;
+            if (tx.isHint) {
+                dut->io_chi_rxrsp_bits_opcode = RSP_Comp;          // CMO completion
+            } else if (tx.isAtomic) {
+                dut->io_chi_rxrsp_bits_opcode = RSP_DBIDResp;      // atomic: buffer only
+            } else {
+                dut->io_chi_rxrsp_bits_opcode = RSP_CompDBIDResp;  // write: comp + buffer
+            }
         } else {
             dut->io_chi_rxrsp_valid = 0;
         }
@@ -378,13 +463,44 @@ public:
                 tx.dbID = nextDBID++;
                 activeReleases[tid] = tx;
                 rxrspRelQueue.push_back(tid);
+            } else {
+                // ---- Uncached / atomic engine REQs ----
+                int sz = dut->io_chi_txreq_bits_size;
+                int beats = (1 << sz) / BEAT_BYTES; if (beats < 1) beats = 1;
+                CHIUncTxn tx{}; tx.txnID = tid; tx.reqOp = op; tx.beats = beats;
+                if (op == REQ_ReadOnce) {
+                    tx.isRead = true; tx.rbeatsLeft = beats;
+                    for (int i = 0; i < beats; i++)
+                        tx.retData.push_back(0x600D0000ULL | (tid << 8) | i);
+                    activeUnc[tid] = tx; uncDataQueue.push_back(tid);
+                } else if (op == REQ_WriteUniqueFull || op == REQ_WriteUniquePtl) {
+                    tx.isWrite = true; tx.dbID = nextDBID++;
+                    activeUnc[tid] = tx; uncRxrspQueue.push_back(tid);
+                } else if (op == REQ_CleanShared || op == REQ_CleanInvalid) {
+                    tx.isHint = true;
+                    activeUnc[tid] = tx; uncRxrspQueue.push_back(tid);
+                } else if (op >= 0x40 && op <= 0x51) {
+                    // Atomic*: DBIDResp -> operand -> CompData(old value).
+                    tx.isAtomic = true; tx.isWrite = true; tx.isRead = true;
+                    tx.beats = 1; tx.rbeatsLeft = 1; tx.dbID = nextDBID++;
+                    tx.retData.push_back(0x0DDBA11A70000000ULL | tid);  // "old" value
+                    activeUnc[tid] = tx; uncRxrspQueue.push_back(tid);
+                } else {
+                    CHECK(false, "Unexpected REQ opcode 0x%x", op);
+                }
             }
         }
 
-        // rxdat.fire
+        // rxdat.fire — acquire reads first, then uncached (Get / Atomic).
         if (dut->io_chi_rxdat_valid && dut->io_chi_rxdat_ready) {
-            int tid = dataQueue.front();
-            if (--activeReads[tid].beatsLeft == 0) dataQueue.pop_front();
+            if (!dataQueue.empty()) {
+                int tid = dataQueue.front();
+                if (--activeReads[tid].beatsLeft == 0) dataQueue.pop_front();
+            } else if (!uncDataQueue.empty()) {
+                int tid = uncDataQueue.front();
+                CHIUncTxn &tx = activeUnc[tid];
+                if (--tx.rbeatsLeft == 0) { uncDataQueue.pop_front(); tx.complete = true; }
+            }
         }
 
         // rxrsp.fire — release rxrsp delivered (dbid or comp)
@@ -401,6 +517,15 @@ public:
                 rxrspRelQueue.pop_front();
             } else if (!rxrspQueue.empty()) {
                 rxrspQueue.pop_front();
+            } else if (!uncRxrspQueue.empty()) {
+                int tid = uncRxrspQueue.front();
+                CHIUncTxn &tx = activeUnc[tid];
+                if (tx.isHint) {
+                    tx.complete = true;          // Comp delivered; bridge -> HintAck
+                } else {
+                    tx.dbidSent = true;          // write/atomic: buffer granted
+                }
+                uncRxrspQueue.pop_front();
             }
         }
 
@@ -467,6 +592,23 @@ public:
                     it->second.data.push_back(d);
                     if ((int)it->second.data.size() == BEATS_PER_LINE) {
                         it->second.complete = true;
+                    }
+                }
+            } else if (op == DAT_NonCopyBackWr) {
+                // Uncached / atomic write data, tagged with the HN's dbID.
+                uint64_t be = dut->io_chi_txdat_bits_be;
+                for (auto &kv : activeUnc) {
+                    CHIUncTxn &tx = kv.second;
+                    if (tx.isWrite && tx.dbidSent && tx.dbID == dbid &&
+                        tx.wbeatsSeen < tx.beats) {
+                        tx.wbeatsSeen++;
+                        tx.wdata.push_back(d);
+                        tx.wbe.push_back(be);
+                        if (tx.wbeatsSeen == tx.beats && tx.isAtomic) {
+                            // Operand received — return the pre-op value.
+                            uncDataQueue.push_back(kv.first);
+                        }
+                        break;
                     }
                 }
             } else {
@@ -656,8 +798,102 @@ int main(int argc, char** argv) {
     run_snoop(SNP_SnpUnique, 0x13, 1, 0xC000, OP_ProbeAckData, P_TtoN,
               snp_data2, B_toN, 0x4, true);
 
+    // ================= Stage 6: uncached / atomic =================
+    // Drives a TL-A Get/Put/Hint/Atomic, waits for the D response, and
+    // checks the CHI REQ opcode the HN observed plus (optionally) the D
+    // read-return data and the write/operand data the bridge forwarded.
+    auto run_uncached = [&](const char* name, int op, int param, int source, int size,
+                            const std::vector<uint64_t>& wdata,
+                            int exp_req_op, int exp_d_op,
+                            const std::vector<uint64_t>& exp_d_data,
+                            const std::vector<uint64_t>& exp_w_data) {
+        std::printf("Uncached %s: op=%d param=%d source=%d size=%d\n",
+                    name, op, param, source, size);
+        master.doneResps.clear();
+        int uncTid = (source & 0xF) | 0x40;
+        hn.activeUnc.erase(uncTid);
+        TLAReq req{}; req.opcode = op; req.param = param; req.size = size;
+        req.source = source; req.address = 0x4000 + 0x100 * source;
+        req.data = wdata;
+        master.aQ.push_back(req);
+        uint64_t start = main_time;
+        while (master.doneResps.empty()) {
+            tick();
+            if (main_time - start > 600) {
+                std::printf("TIMEOUT uncached %s (time=%ld)\n", name, main_time);
+                errs++; break;
+            }
+        }
+        if (!master.doneResps.empty()) {
+            TLResp res = master.doneResps.front(); master.doneResps.pop_front();
+            CHECK(res.opcode == exp_d_op, "%s D opcode: exp %d got %d", name, exp_d_op, res.opcode);
+            CHECK(res.source == source, "%s D source: exp %d got %d", name, source, res.source);
+            if (!exp_d_data.empty()) {
+                CHECK(res.data.size() == exp_d_data.size(),
+                      "%s D beats: exp %zu got %zu", name, exp_d_data.size(), res.data.size());
+                for (size_t i = 0; i < exp_d_data.size() && i < res.data.size(); i++)
+                    CHECK(res.data[i] == exp_d_data[i],
+                          "%s D data[%zu]: exp 0x%016lx got 0x%016lx",
+                          name, i, exp_d_data[i], res.data[i]);
+            }
+        }
+        auto it = hn.activeUnc.find(uncTid);
+        CHECK(it != hn.activeUnc.end(), "%s: HN saw no REQ", name);
+        if (it != hn.activeUnc.end()) {
+            CHECK(it->second.reqOp == exp_req_op,
+                  "%s REQ opcode: exp 0x%x got 0x%x", name, exp_req_op, it->second.reqOp);
+            if (!exp_w_data.empty()) {
+                CHECK(it->second.wdata.size() == exp_w_data.size(),
+                      "%s W beats: exp %zu got %zu", name, exp_w_data.size(), it->second.wdata.size());
+                for (size_t i = 0; i < exp_w_data.size() && i < it->second.wdata.size(); i++)
+                    CHECK(it->second.wdata[i] == exp_w_data[i],
+                          "%s W data[%zu]: exp 0x%016lx got 0x%016lx",
+                          name, i, exp_w_data[i], it->second.wdata[i]);
+            }
+        }
+    };
+    auto oldVal = [](int uncTid) { return 0x0DDBA11A70000000ULL | (uint64_t)uncTid; };
+    auto getPat = [](int uncTid, int beats) {
+        std::vector<uint64_t> v;
+        for (int i = 0; i < beats; i++) v.push_back(0x600D0000ULL | (uncTid << 8) | i);
+        return v;
+    };
+
+    // Get — full line (8 beats) and single beat.
+    run_uncached("GetLine", OP_Get, 0, 9, 6, {}, REQ_ReadOnce, D_AccessAckData,
+                 getPat(0x49, BEATS_PER_LINE), {});
+    run_uncached("Get8B", OP_Get, 0, 10, 3, {}, REQ_ReadOnce, D_AccessAckData,
+                 getPat(0x4A, 1), {});
+
+    // Put — full line and single partial beat.
+    std::vector<uint64_t> put_line;
+    for (int i = 0; i < BEATS_PER_LINE; i++) put_line.push_back(0x1111000000000000ULL | i);
+    run_uncached("PutFull", OP_PutFull, 0, 11, 6, put_line, REQ_WriteUniqueFull,
+                 D_AccessAck, {}, put_line);
+    run_uncached("PutPartial", OP_PutPartial, 0, 12, 3, {0x2222333344445555ULL},
+                 REQ_WriteUniquePtl, D_AccessAck, {}, {0x2222333344445555ULL});
+
+    // Hint — prefetch read/write map to no-data CMOs, return HintAck.
+    run_uncached("PrefetchRead", OP_Hint, H_PrefetchRead, 13, 6, {},
+                 REQ_CleanShared, D_HintAck, {}, {});
+    run_uncached("PrefetchWrite", OP_Hint, H_PrefetchWrite, 14, 6, {},
+                 REQ_CleanInvalid, D_HintAck, {}, {});
+
+    // Atomics — operand on A, pre-op value returned via AccessAckData.
+    run_uncached("AmoAdd", OP_Arithmetic, A_ADD, 1, 3, {0xAAAA0000BBBB1111ULL},
+                 REQ_AtomicLoadAdd, D_AccessAckData, {oldVal(0x41)}, {0xAAAA0000BBBB1111ULL});
+    run_uncached("AmoMin", OP_Arithmetic, A_MIN, 2, 3, {0x0000000000000007ULL},
+                 REQ_AtomicLoadSmin, D_AccessAckData, {oldVal(0x42)}, {0x0000000000000007ULL});
+    run_uncached("AmoXor", OP_Logical, L_XOR, 3, 3, {0xF0F0F0F0F0F0F0F0ULL},
+                 REQ_AtomicLoadEor, D_AccessAckData, {oldVal(0x43)}, {0xF0F0F0F0F0F0F0F0ULL});
+    // AND maps to AtomicClr with the operand inverted on the wire.
+    run_uncached("AmoAnd", OP_Logical, L_AND, 4, 3, {0x00FF00FF00FF00FFULL},
+                 REQ_AtomicLoadClr, D_AccessAckData, {oldVal(0x44)}, {~0x00FF00FF00FF00FFULL});
+    run_uncached("AmoSwap", OP_Logical, L_SWAP, 5, 3, {0x1234567889ABCDEFULL},
+                 REQ_AtomicSwap, D_AccessAckData, {oldVal(0x45)}, {0x1234567889ABCDEFULL});
+
     tfp->close();
     delete dut;
     if (errs > 0) { std::printf("FAILED with %d errors\n", errs); return 1; }
-    std::printf("CHI Stage 5 TB: PASS\n"); return 0;
+    std::printf("CHI Stage 6 TB: PASS\n"); return 0;
 }

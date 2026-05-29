@@ -372,11 +372,18 @@ module tlctochi_props (
     // -----------------------------------------------------------------
     // Assumptions
     // -----------------------------------------------------------------
-    //   Only legal TL-A acquire opcodes (AcquireBlock=6, AcquirePerm=7)
-    //   and legal params (NtoB=0, NtoT=1, BtoT=2).
+    //   TL-A opcodes (Stage 6): all eight are legal — acquire (6,7) plus
+    //   the uncached engine's Put(0,1)/Arith(2)/Logical(3)/Get(4)/Hint(5).
+    //   Acquire params are NtoB/NtoT/BtoT (≤2); uncached/atomic params run
+    //   up to 4 (Arithmetic ADD).  Scope A to single-beat transactions
+    //   (size ≤ beat): the line-buffer collect path is exercised in sim /
+    //   cocotb, and single-beat keeps each A.fire unambiguously owned by
+    //   exactly one engine (no mid-burst opcode aliasing for the shadows).
     always @(*) if (io_tl_a_valid) begin
-        assume (io_tl_a_bits_opcode == 3'd6 || io_tl_a_bits_opcode == 3'd7);
-        assume (io_tl_a_bits_param  <= 3'd2);
+        if      (io_tl_a_bits_opcode >= 3'd6) assume (io_tl_a_bits_param <= 3'd2); // acquire
+        else if (io_tl_a_bits_opcode == 3'd3) assume (io_tl_a_bits_param <= 3'd3); // logical
+        else                                  assume (io_tl_a_bits_param <= 3'd4); // arith ADD=4
+        assume (io_tl_a_bits_size <= 3'd3);
     end
     //   Legal TL-C opcodes: ProbeAck=4, ProbeAckData=5, Release=6,
     //   ReleaseData=7.  Stage 5 adds the probe-response cases.
@@ -420,7 +427,17 @@ module tlctochi_props (
     wire d_is_releaseack = (io_tl_d_bits_opcode == 3'd6);
     wire d_is_grantdata  = (io_tl_d_bits_opcode == 3'd5);
     wire d_is_grant      = (io_tl_d_bits_opcode == 3'd4);
-    wire req_is_rel      = io_chi_txreq_bits_txnID[7];  // txnID MSB
+    // Uncached D responses: AccessAck=0, AccessAckData=1, HintAck=2.
+    wire d_is_unc_resp   = (io_tl_d_bits_opcode <= 3'd2);
+
+    // TL-A engine ownership (single-beat scope -> opcode is unambiguous).
+    wire a_is_acq = (io_tl_a_bits_opcode >= 3'd6);   // Acquire*
+    wire a_is_unc = (io_tl_a_bits_opcode <= 3'd5);   // Get/Put/Hint/Atomic
+
+    // CHI REQ txnID partition (bits[7:6]): 00 acquire, 10 release, 01 unc.
+    wire req_is_rel = io_chi_txreq_bits_txnID[7];
+    wire req_is_unc = !io_chi_txreq_bits_txnID[7] && io_chi_txreq_bits_txnID[6];
+    wire req_is_acq = !io_chi_txreq_bits_txnID[7] && !io_chi_txreq_bits_txnID[6];
 
     wire c_is_probeack     = (io_tl_c_bits_opcode == 3'd4);
     wire c_is_probeackdata = (io_tl_c_bits_opcode == 3'd5);
@@ -431,6 +448,7 @@ module tlctochi_props (
     wire txrsp_is_compack = (io_chi_txrsp_bits_opcode == 5'd2);
     wire txdat_is_snprespdata = (io_chi_txdat_bits_opcode == 4'd1);
     wire txdat_is_copyback    = (io_chi_txdat_bits_opcode == 4'd2);
+    wire txdat_is_noncopyback = (io_chi_txdat_bits_opcode == 4'd3);
 
     // -----------------------------------------------------------------
     // Acquire snapshot — latched at A.fire, cleared at CompAck.  txrsp is
@@ -444,13 +462,35 @@ module tlctochi_props (
     initial acq_snap_valid = 1'b0;
     always @(posedge clock) begin
         if (reset) acq_snap_valid <= 1'b0;
-        else if (a_fire) begin
+        else if (a_fire && a_is_acq) begin    // only Acquire* feeds this engine
             acq_snap_valid  <= 1'b1;
             acq_snap_opcode <= io_tl_a_bits_opcode;
             acq_snap_param  <= io_tl_a_bits_param;
             acq_snap_source <= io_tl_a_bits_source;
         end else if (txrsp_fire && txrsp_is_compack) begin
             acq_snap_valid  <= 1'b0;
+        end
+    end
+
+    // -----------------------------------------------------------------
+    // Uncached snapshot — latched at the uncached A.fire (Get/Put/Hint/
+    // Atomic), cleared when its TL-D response (AccessAck/AccessAckData/
+    // HintAck) fires.  Single-beat A scope means one beat == one accept.
+    // -----------------------------------------------------------------
+    reg        unc_snap_valid;
+    reg [2:0]  unc_snap_opcode;
+    reg [2:0]  unc_snap_param;
+    reg [3:0]  unc_snap_source;
+    initial unc_snap_valid = 1'b0;
+    always @(posedge clock) begin
+        if (reset) unc_snap_valid <= 1'b0;
+        else if (!unc_snap_valid && a_fire && a_is_unc) begin
+            unc_snap_valid  <= 1'b1;
+            unc_snap_opcode <= io_tl_a_bits_opcode;
+            unc_snap_param  <= io_tl_a_bits_param;
+            unc_snap_source <= io_tl_a_bits_source;
+        end else if (d_fire && d_is_unc_resp) begin
+            unc_snap_valid  <= 1'b0;
         end
     end
 
@@ -516,7 +556,7 @@ module tlctochi_props (
     //     ReleaseData(TtoN)   -> WriteBackFull(0x1D)
     //     ReleaseData(TtoB)   -> WriteCleanFull(0x19)
     // -----------------------------------------------------------------
-    always @(*) if (chk && req_fire && !req_is_rel) begin
+    always @(*) if (chk && req_fire && req_is_acq) begin
         assert (acq_snap_valid);
         if (acq_snap_opcode == 3'd7)
             assert (io_chi_txreq_bits_opcode == 7'h0C);
@@ -567,23 +607,25 @@ module tlctochi_props (
 
     // -----------------------------------------------------------------
     // F-CHI-4: Release txdat (CopyBackWrData) only fires while a release
-    // snapshot is in flight.  txdat is shared with the snoop engine
-    // (SnpRespData); every txdat beat is exactly one of those two, and
-    // only the CopyBackWrData case requires a live release here (the
-    // SnpRespData case is covered by F-CHI-6).
+    // snapshot is in flight.  txdat is shared three ways now — release
+    // (CopyBackWrData), uncached (NonCopyBackWrData) and snoop
+    // (SnpRespData) — so every beat is exactly one of those, and only the
+    // CopyBackWrData case requires a live release here (NonCopyBackWrData
+    // is F-CHI-10, SnpRespData is F-CHI-6).
     // -----------------------------------------------------------------
     always @(*) if (chk && txdat_fire) begin
-        assert (txdat_is_copyback || txdat_is_snprespdata);
+        assert (txdat_is_copyback || txdat_is_snprespdata || txdat_is_noncopyback);
     end
     always @(*) if (chk && txdat_fire && txdat_is_copyback) begin
         assert (rel_snap_valid);
     end
 
     // -----------------------------------------------------------------
-    // F-CHI-5: txnID partition — acquire REQs always carry txnID[7]=0,
-    // release REQs always carry txnID[7]=1.  No collisions possible.
+    // F-CHI-5: txnID partition (bits[7:6]) — acquire 00, release 10,
+    // uncached 01.  Each partition only ever emits its own opcode set, so
+    // the three engines never collide on txnID even with the same source.
     // -----------------------------------------------------------------
-    always @(*) if (chk && req_fire && !req_is_rel) begin
+    always @(*) if (chk && req_fire && req_is_acq) begin
         // Acquire REQ opcodes
         assert (io_chi_txreq_bits_opcode == 7'h01 ||
                 io_chi_txreq_bits_opcode == 7'h07 ||
@@ -644,10 +686,76 @@ module tlctochi_props (
     // reachable.
     // -----------------------------------------------------------------
     always @(*) if (chk && txdat_fire) begin
-        assert (txdat_is_copyback != txdat_is_snprespdata);
+        // Exactly one of the three txdat producers owns the beat.
+        assert ((txdat_is_copyback + txdat_is_snprespdata + txdat_is_noncopyback) == 3'd1);
     end
     always @(*) if (chk && txrsp_fire) begin
         assert (txrsp_is_compack != txrsp_is_snpresp);
+    end
+
+    // -----------------------------------------------------------------
+    // F-CHI-9: Uncached REQ mapping.  A REQ on the uncached partition
+    // (txnID[7:6]==01) only fires with a live uncached snapshot, and its
+    // CHI opcode is exactly the documented map of the latched TL-A
+    // {opcode, param}:
+    //   Get(4)        -> ReadOnce      (0x03)
+    //   PutFull(0)    -> WriteUniqueFull (0x1B)
+    //   PutPartial(1) -> WriteUniquePtl  (0x1A)
+    //   Hint(5)       -> CleanShared(0x08) [PrefetchRead] / CleanInvalid(0x09)
+    //   Arith(2)      -> AtomicLoad Smin/Smax/Umin/Umax/Add (0x4D/4C/4F/4E/48)
+    //   Logical(3)    -> AtomicLoad Eor/Set/Clr (0x4A/4B/49) / AtomicSwap(0x50)
+    // -----------------------------------------------------------------
+    always @(*) if (chk && req_fire && req_is_unc) begin
+        assert (unc_snap_valid);
+        case (unc_snap_opcode)
+            3'd4: assert (io_chi_txreq_bits_opcode == 7'h03);  // Get
+            3'd0: assert (io_chi_txreq_bits_opcode == 7'h1B);  // PutFull
+            3'd1: assert (io_chi_txreq_bits_opcode == 7'h1A);  // PutPartial
+            3'd5: assert (io_chi_txreq_bits_opcode ==
+                          (unc_snap_param == 3'd0 ? 7'h08 : 7'h09));  // Hint
+            3'd2: begin  // ArithmeticData
+                if      (unc_snap_param == 3'd0) assert (io_chi_txreq_bits_opcode == 7'h4D);
+                else if (unc_snap_param == 3'd1) assert (io_chi_txreq_bits_opcode == 7'h4C);
+                else if (unc_snap_param == 3'd2) assert (io_chi_txreq_bits_opcode == 7'h4F);
+                else if (unc_snap_param == 3'd3) assert (io_chi_txreq_bits_opcode == 7'h4E);
+                else                             assert (io_chi_txreq_bits_opcode == 7'h48);
+            end
+            default: begin  // LogicalData (opcode 3)
+                if      (unc_snap_param == 3'd0) assert (io_chi_txreq_bits_opcode == 7'h4A);
+                else if (unc_snap_param == 3'd1) assert (io_chi_txreq_bits_opcode == 7'h4B);
+                else if (unc_snap_param == 3'd2) assert (io_chi_txreq_bits_opcode == 7'h49);
+                else                             assert (io_chi_txreq_bits_opcode == 7'h50);
+            end
+        endcase
+    end
+
+    // -----------------------------------------------------------------
+    // F-CHI-10: Uncached write-data conservation.  NonCopyBackWrData only
+    // fires while an uncached write/atomic is in flight, and only for ops
+    // that actually carry write data (Put / Atomic — never Get / Hint).
+    // -----------------------------------------------------------------
+    wire unc_has_wdata = (unc_snap_opcode == 3'd0) || (unc_snap_opcode == 3'd1) ||  // Put
+                         (unc_snap_opcode == 3'd2) || (unc_snap_opcode == 3'd3);     // Atomic
+    always @(*) if (chk && txdat_fire && txdat_is_noncopyback) begin
+        assert (unc_snap_valid);
+        assert (unc_has_wdata);
+    end
+
+    // -----------------------------------------------------------------
+    // F-CHI-11: Uncached D routing.  AccessAck/AccessAckData/HintAck only
+    // fire with a live uncached snapshot and carry its source; the D
+    // opcode matches the op class (read-return -> AccessAckData,
+    // hint -> HintAck, write -> AccessAck).
+    // -----------------------------------------------------------------
+    wire unc_returns_data = (unc_snap_opcode == 3'd4) ||                       // Get
+                            (unc_snap_opcode == 3'd2) || (unc_snap_opcode == 3'd3); // Atomic
+    wire unc_is_hint      = (unc_snap_opcode == 3'd5);
+    always @(*) if (chk && d_fire && d_is_unc_resp) begin
+        assert (unc_snap_valid);
+        assert (io_tl_d_bits_source == unc_snap_source);
+        if (unc_returns_data) assert (io_tl_d_bits_opcode == 3'd1);  // AccessAckData
+        else if (unc_is_hint) assert (io_tl_d_bits_opcode == 3'd2);  // HintAck
+        else                  assert (io_tl_d_bits_opcode == 3'd0);  // AccessAck
     end
 
     // -----------------------------------------------------------------
@@ -664,5 +772,14 @@ module tlctochi_props (
     always @(*) cover (chk && txdat_fire && txdat_is_snprespdata);  // SnpRespData
     always @(*) cover (chk && snp_busy && rel_snap_valid);          // probe/release race window
     always @(*) cover (chk && snp_busy && acq_snap_valid);          // snoop during acquire
+    // Stage 6 uncached / atomic
+    always @(*) cover (chk && req_fire && io_chi_txreq_bits_opcode == 7'h03); // ReadOnce
+    always @(*) cover (chk && req_fire && io_chi_txreq_bits_opcode == 7'h1B); // WriteUniqueFull
+    always @(*) cover (chk && req_fire && io_chi_txreq_bits_opcode == 7'h08); // CleanShared (prefetch)
+    always @(*) cover (chk && req_fire && io_chi_txreq_bits_opcode == 7'h48); // AtomicLoadAdd
+    always @(*) cover (chk && req_fire && io_chi_txreq_bits_opcode == 7'h50); // AtomicSwap
+    always @(*) cover (chk && txdat_fire && txdat_is_noncopyback);           // NonCopyBackWrData
+    always @(*) cover (chk && d_fire && (io_tl_d_bits_opcode == 3'd1) && unc_snap_valid); // AccessAckData
+    always @(*) cover (chk && d_fire && (io_tl_d_bits_opcode == 3'd2));      // HintAck
 
 endmodule

@@ -1,6 +1,6 @@
 # TL-C → CHI Bridge — Staged Implementation Plan
 
-**Status:** Stages 1–5 landed 2026-05-29; Stages 6–7 pending.
+**Status:** Stages 1–6 landed 2026-05-29; Stage 7 pending.
 **As of:** 2026-05-29
 **Direction:** TL-C upstream → CHI Issue-E downstream
 **Module name:** `TLCToCHI`
@@ -248,20 +248,68 @@ is the documented behavior in `TLCToCHI.scala`'s Stage 5 header.
 - `make regress` PASS — TLUH 183 jobs, ULite 24, UC 11, CHI 12; all
   6 lint targets clean; no regression.
 
-### Stage 6 — Atomics, CMO, prefetch
+### ~~Stage 6 — Atomics, CMO, prefetch~~ ✓ DONE 2026-05-29
 
-**Mapping**
-| TL | CHI |
-|---|---|
-| TL-A `ArithmeticData` / `LogicalData` | `AtomicStore_*` / `AtomicLoad_*` / `AtomicSwap` / `AtomicCompare` |
-| TL-A `Hint(PrefetchRead)` | `ReadOnce` or `PrefetchTgt` |
-| TL-A `Hint(PrefetchWrite)` | `ReadOnceMakeInvalid` or omit |
-| CMO opcodes via Hint param (if used) | `CleanInvalid` / `CleanShared` / `MakeInvalid` |
+The TL-A uncached opcode space (Get/Put/Hint/Arithmetic/Logical), which
+the bridge previously rejected, now flows through a fourth **uncached
+engine** running in parallel with acquire/release/snoop.  Implemented in
+one pass.
 
-**Verification additions**
-- Atomic ADD / XOR / SWAP / CAS directed + randomized
-- Formal: F-CHI-9 (atomic completes in-order with prior reads/writes
-  per CHI §B2 ordering)
+**Mapping (as landed)**
+| TL-A | CHI REQ | flow |
+|---|---|---|
+| `Get`                | `ReadOnce` (0x03)           | → CompData → `AccessAckData` |
+| `PutFullData`        | `WriteUniqueFull` (0x1B)    | → CompDBIDResp → NonCopyBackWrData → `AccessAck` |
+| `PutPartialData`     | `WriteUniquePtl` (0x1A)     | (byte-enables from the TL mask) |
+| `Hint(PrefetchRead)` | `CleanShared` (0x08)        | → Comp → `HintAck` (no data) |
+| `Hint(PrefetchWrite)`| `CleanInvalid` (0x09)       | → Comp → `HintAck` (no data) |
+| `ArithmeticData`     | `AtomicLoad{Add,Smin,Smax,Umin,Umax}` | → DBIDResp → NonCopyBackWrData(operand) → CompData(pre-op value) → `AccessAckData` |
+| `LogicalData`        | `AtomicLoad{Eor,Set,Clr}` / `AtomicSwap` | AND→Clr with the operand inverted on the wire |
+
+Decisions taken (the original draft left two open):
+- **Prefetch = no-data CMO.**  Prefetch hints map to `CleanShared` /
+  `CleanInvalid` (return only `Comp`), not `ReadOnce`/`PrefetchTgt` — the
+  bridge never has to sink a prefetched line, and the TL master always
+  gets a clean `HintAck`.
+- **Atomics = AtomicLoad family.**  TileLink atomics always return the
+  pre-op value, so they map to the CHI *Load* atomics (and `AtomicSwap`),
+  never `AtomicStore`.  `AtomicCompare` is unused (TL has no CAS).  AND
+  has no CHI form: it maps to `AtomicClr` with the operand bit-inverted
+  on the wire (`Clr` computes `old & ~txdata`).
+
+**Deliverables (all landed)**
+- Uncached engine in `TLCToCHI.scala`: 7-state FSM
+  (Idle → ACollect → REQ → WRsp → WData → Resp → DResp) with a line
+  buffer for Put write-data and atomic operands.  TxnID partition
+  extended to a 2-bit scheme (`{2'b01, source}` for uncached); txreq /
+  txdat / rxrsp / rxdat / D arbitration all extended to the fourth engine
+  with acquire/release-first priority.
+- TB extension (`tb_chi.cpp`): HN models ReadOnce / WriteUnique* / CMO /
+  Atomic flows (DBIDResp, NonCopyBackWrData collection, pre-op CompData);
+  TL-A gains multi-beat write-data driving and AccessAckData collection.
+  11 new directed jobs (Get×2, Put×2, Hint×2, Atomic×5 incl. AND-invert).
+- Cocotb: `test_uncached_mixed` (Get/Put/Hint/Atomic-Add/Atomic-And).
+- Formal: F-CHI-9 (uncached REQ opcode = documented map of the TL-A
+  {opcode,param}), F-CHI-10 (NonCopyBackWrData only with a live uncached
+  write/atomic), F-CHI-11 (AccessAck/AccessAckData/HintAck routing).
+  F-CHI-1/4/5/8 extended for the new txnID partition and the
+  NonCopyBackWrData txdat producer.  8 new cover goals.
+
+**Stage 6 limits**
+- Formal scopes TL-A to single-beat (`size ≤ beat`); the multi-beat Put
+  line-buffer path is covered in sim/cocotb.
+- error/`denied` is propagated only for Get/Atomic read-return, not for
+  Put/Hint.
+- no CAS (`AtomicCompare`), no `WriteUnique` CompAck ordering, no
+  multi-line atomics (enforced single-beat).
+
+**Exit criteria met**
+- `make sim-chi` PASS: 23 directed jobs (4 acquire + 4 release + 4 snoop
+  + 11 uncached/atomic).
+- `make formal-chi` BMC depth 20 PASS, all 19 cover goals reached.
+- `make cocotb-chi` PASS: 4 tests.
+- `make regress` PASS — TLUH 183, ULite 24, UC 11, CHI 23; all 6 lints
+  clean; no regression.
 
 ### Stage 7 — Full verification surface + CI parity
 
@@ -364,34 +412,35 @@ doc/
 
 ## 8. Status & next step
 
-**Stages 1–5 landed 2026-05-29.**  Read path (Stages 1–3), release
-path (Stage 4), and snoop path (Stage 5) all shipped the same day.
-Three engines (acquire / release / snoop) run in parallel.  TxnID
-partition (`{1'b0, src}` for acquires, `{1'b1, src}` for releases)
-keeps the request engines disjoint on rxrsp; the snoop engine echoes
-the HN-chosen txnID and shares txrsp/txdat with acquire/release under
-acquire/release-first priority.  F-CHI-1..8 hold at BMC depth 20 with
-11 cover goals reachable.
+**Stages 1–6 landed 2026-05-29.**  Read path (Stages 1–3), release
+path (Stage 4), snoop path (Stage 5), and uncached/atomic path
+(Stage 6) all shipped the same day.  Four engines (acquire / release /
+snoop / uncached) run in parallel.  TxnID is now a 2-bit partition
+(`{2'b00,src}` acquire, `{2'b10,src}` release, `{2'b01,src}` uncached);
+the snoop engine echoes the HN-chosen txnID.  Shared CHI channels are
+arbitrated acquire/release-first; the TL D channel is acquire > release
+> uncached.  F-CHI-1..11 hold at BMC depth 20 with 19 cover goals
+reachable.
 
 The four open questions in §2 were settled as follows:
-1. **DCT/DMT:** off for Stage 1; still off through Stage 5 — revisit
-   at Stage 6.
-2. **CHI HN model:** hand-rolled from the spec.  TB and cocotb
-   harness both serve full Issue-E semantics for the opcodes
-   exercised so far (Read*, MakeUnique, Evict, WriteBack/Clean,
-   SnpShared, SnpUnique with ProbeAck / ProbeAckData).
-3. **Multi-line atomics:** confirmed disallowed — bridge will enforce
-   `a.size ≤ log2(lineBytes)` for atomics at elaboration.
+1. **DCT/DMT:** off through Stage 6 — revisit only if a consumer needs it.
+2. **CHI HN model:** hand-rolled from the spec.  TB and cocotb harness
+   serve full Issue-E semantics for every opcode exercised (Read*,
+   MakeUnique, Evict, WriteBack/Clean, Snp{Shared,Unique}, ReadOnce,
+   WriteUnique*, CleanShared/Invalid, AtomicLoad*/Swap).
+3. **Multi-line atomics:** disallowed — atomics are single-beat
+   (`a.size ≤ beat`).
 4. **Cache line:** pinned at 64 B.
 
-**Next step is a separate go-ahead** to start Stage 6 (atomics, CMO,
-prefetch).  Before that, two Stage 5 follow-ups are worth scheduling:
-- **Probe ↔ release collapse.**  Stage 5 deliberately does *not*
-  collapse a Probe that races a same-line Release (see the Stage 5
-  limit above).  True collapse plus the CHI §B2 ExpCompAck hazard
-  interplay is deferred; revisit if a real host needs it.
-- **Snoop verification breadth.**  Stage 5 covers SnpShared/SnpUnique
-  with ProbeAck/ProbeAckData; the remaining Snp* opcodes
-  (SnpClean, SnpCleanInvalid, SnpMakeInvalid, SnpNotSharedDirty) are
-  mapped and lint/formal-legal but not yet directed-tested.  Fold into
-  the Stage 7 randomized sweep.
+**Next step is a separate go-ahead** to start Stage 7 (full verification
+surface + CI parity: randomized sweep, BMC depth 30, coverage target,
+`.github/workflows/ci.yml` chi job, ASSERTIONS.md §8 catalog).  Open
+follow-ups carried forward:
+- **Probe ↔ release collapse.**  Still not collapsed (Stage 5 limit);
+  the engines complete independently.  Revisit if a real host needs it.
+- **Snoop verification breadth.**  Remaining Snp* opcodes (SnpClean,
+  SnpCleanInvalid, SnpMakeInvalid, SnpNotSharedDirty) are mapped and
+  formal-legal but not yet directed-tested.
+- **Stage 6 gaps.**  No CAS (`AtomicCompare`), no multi-beat Put in
+  formal (sim/cocotb only), Put/Hint error not propagated to `denied`.
+  Fold all into the Stage 7 sweep.

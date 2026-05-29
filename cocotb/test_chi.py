@@ -4,6 +4,12 @@ from env_chi import (reset_dut, CHIHN, TLMasterCHI,
                      TL_OP_AcqBlock, TL_OP_AcqPerm,
                      TL_OP_Release, TL_OP_ReleaseData,
                      TL_OP_ProbeAck, TL_OP_ProbeAckData,
+                     TL_OP_Get, TL_OP_PutFull, TL_OP_Hint,
+                     TL_OP_Arith, TL_OP_Logical,
+                     TL_D_AccessAck, TL_D_AccessAckData, TL_D_HintAck,
+                     REQ_ReadOnce, REQ_WriteUniqueFull, REQ_CleanShared,
+                     REQ_AtomicLoadAdd, REQ_AtomicLoadClr,
+                     A_ADD, L_AND,
                      SNP_SnpShared, SNP_SnpUnique,
                      RSP_SnpResp, DAT_SnpRespData,
                      CHI_I, CHI_SC)
@@ -114,3 +120,48 @@ async def test_snoop_mixed(dut):
     assert r["data"] == snp_data2
 
     dut._log.info("test_snoop_mixed passed")
+
+
+@cocotb.test()
+async def test_uncached_mixed(dut):
+    """Get / Put / Hint / Atomic over the uncached engine."""
+    cocotb.start_soon(Clock(dut.clock, 10, units="ns").start())
+    await reset_dut(dut)
+
+    hn = CHIHN(dut)
+    master = TLMasterCHI(dut)
+    cocotb.start_soon(hn.run())
+
+    # Get (full line) -> ReadOnce -> AccessAckData
+    op, data = await master.uncached(TL_OP_Get, 0, 9, 6)
+    assert op == TL_D_AccessAckData, f"Get D op {op:#x}"
+    assert hn.unc_req[0x49] == REQ_ReadOnce
+    assert data == [0x600D0000 | (0x49 << 8) | i for i in range(8)], data
+
+    # PutFull (full line) -> WriteUniqueFull -> AccessAck
+    wd = [0x1111000000000000 | i for i in range(8)]
+    op, _ = await master.uncached(TL_OP_PutFull, 0, 11, 6, wd)
+    assert op == TL_D_AccessAck, f"Put D op {op:#x}"
+    assert hn.unc_req[0x4B] == REQ_WriteUniqueFull
+    assert hn.unc_wdata[0x4B] == wd, hn.unc_wdata[0x4B]
+
+    # Hint(PrefetchRead) -> CleanShared -> HintAck
+    op, _ = await master.uncached(TL_OP_Hint, 0, 13, 6)
+    assert op == TL_D_HintAck, f"Hint D op {op:#x}"
+    assert hn.unc_req[0x4D] == REQ_CleanShared
+
+    # Atomic ADD -> AtomicLoadAdd; operand forwarded, pre-op value returned
+    op, data = await master.uncached(TL_OP_Arith, A_ADD, 1, 3, [0xAAAA0000BBBB1111])
+    assert op == TL_D_AccessAckData
+    assert hn.unc_req[0x41] == REQ_AtomicLoadAdd
+    assert hn.unc_wdata[0x41] == [0xAAAA0000BBBB1111]
+    assert data == [0x0DDBA11A70000000 | 0x41]
+
+    # Atomic AND -> AtomicLoadClr with the operand inverted on the wire
+    operand = 0x00FF00FF00FF00FF
+    op, data = await master.uncached(TL_OP_Logical, L_AND, 4, 3, [operand])
+    assert op == TL_D_AccessAckData
+    assert hn.unc_req[0x44] == REQ_AtomicLoadClr
+    assert hn.unc_wdata[0x44] == [(~operand) & ((1 << 64) - 1)], hn.unc_wdata[0x44]
+
+    dut._log.info("test_uncached_mixed passed")

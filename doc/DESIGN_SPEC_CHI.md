@@ -99,13 +99,15 @@ The `D.param` field on `Grant`/`GrantData` carries:
 | `Get` (4) | n/a | `ReadOnce` (0x03) | Stage 6 — non-allocating read |
 | `PutFullData` (0) | n/a | `WriteUniqueFull` (0x1B) | Stage 6 — non-allocating write |
 | `PutPartialData` (1) | n/a | `WriteUniquePtl` (0x1A) | Stage 6 |
-| `Hint` (5) | `PrefetchRead` | `ReadOnce` w/ memAttr=cacheable | Stage 6 |
-| `Hint` (5) | `PrefetchWrite` | `CleanInvalid` (0x09) | Stage 6 |
-| `ArithmeticData` (2) | ADD/MIN/MAX/.. | `AtomicLoad_*` or `AtomicStore_*` (0x20+) | Stage 6 |
-| `LogicalData` (3) | XOR/OR/AND/SWAP | `AtomicLoad_*` (XOR/OR/AND) or `AtomicSwap` | Stage 6 |
+| `Hint` (5) | `PrefetchRead` | `CleanShared` (0x08) | Stage 6 — as-built: no-data CMO, returns Comp→HintAck |
+| `Hint` (5) | `PrefetchWrite` | `CleanInvalid` (0x09) | Stage 6 — no-data CMO |
+| `ArithmeticData` (2) | MIN/MAX/MINU/MAXU/ADD | `AtomicLoadSmin/Smax/Umin/Umax/Add` (0x4D/4C/4F/4E/48) | Stage 6 — Load forms return the pre-op value |
+| `LogicalData` (3) | XOR/OR/AND/SWAP | `AtomicLoadEor/Set/Clr` (0x4A/4B/49) / `AtomicSwap` (0x50) | Stage 6 — AND→Clr with operand inverted |
 
-All requests carry `expCompAck=1` so the HN waits for our CompAck before
-de-allocating its tracker.
+Acquire requests carry `expCompAck=1` so the HN waits for our CompAck
+before de-allocating its tracker.  Uncached/atomic requests (Get/Put/
+Hint/Atomic) carry `expCompAck=0` and `snpAttr=0`: completion is the
+CompData / Comp / CompDBIDResp itself, with no CompAck.
 
 ### 4.2 TL C-channel → CHI REQ (releases as writes)
 
@@ -403,7 +405,7 @@ Per the Stage 1 baseline:
 | 3 | AcquireBlock(NtoT/BtoT) → ReadUnique / MakeUnique; AcquirePerm | **✓ DONE 2026-05-29** |
 | 4 | Release / ReleaseData → WriteBack* / WriteClean* / Evict | **✓ DONE 2026-05-29** |
 | 5 | SnpShared / SnpUnique → Probe → ProbeAck(Data) → SnpResp(Data) (probe ↔ release race *not* collapsed — see §6.4) | **✓ DONE 2026-05-29** |
-| 6 | Atomic ops, CMO, prefetch | not started |
+| 6 | Get/Put/Hint/Atomic → ReadOnce / WriteUnique* / CleanShared·CleanInvalid / AtomicLoad*·AtomicSwap (uncached engine) | **✓ DONE 2026-05-29** |
 | 7 | Randomized sweep + BMC@30 + 90%+ coverage + CI parity | not started |
 
 See [`doc/CHI_PLAN.md`](CHI_PLAN.md) for the per-stage deliverables and
