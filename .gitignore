@@ -18,6 +18,7 @@ build_ulite/
 build_uc/
 build_chi/
 build_cov/
+build_cov_chi/
 obj_dir/
 
 # Simulation outputs
@@ -27,6 +28,7 @@ sim
 
 # Coverage outputs
 coverage.info
+coverage_chi.info
 coverage.dat
 coverage_html/
 

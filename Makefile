@@ -44,12 +44,15 @@ ULITE_BUILD := build_ulite
 UC_BUILD    := build_uc
 CHI_BUILD   := build_chi
 COV_DIR     := build_cov
+CHI_COV_DIR := build_cov_chi
 SIM_EXE     := $(BUILD_DIR)/VTLUHToAXI4
 ULITE_EXE   := $(ULITE_BUILD)/VTLULToAXILite
 UC_EXE      := $(UC_BUILD)/VTLUCToAXI4
 CHI_EXE     := $(CHI_BUILD)/VTLCToCHI
 COV_EXE     := $(COV_DIR)/VTLUHToAXI4
+CHI_COV_EXE := $(CHI_COV_DIR)/VTLCToCHI
 COV_INFO    := coverage.info
+CHI_COV_INFO := coverage_chi.info
 
 # Five UNUSEDSIGNAL warnings are expected and intentional:
 #   io_tl_a_bits_param, io_tl_a_bits_corrupt  — TL fields the bridge ignores
@@ -86,6 +89,19 @@ COV_FLAGS := \
     $(LINT_SUPPRESS) \
     --top-module TLUHToAXI4 \
     -Mdir $(COV_DIR) \
+    -CFLAGS "-std=c++17 -O2"
+
+CHI_COV_FLAGS := \
+    --cc \
+    --exe \
+    --build \
+    --coverage \
+    --trace \
+    -Wall \
+    -Wno-fatal \
+    $(LINT_SUPPRESS) \
+    --top-module TLCToCHI \
+    -Mdir $(CHI_COV_DIR) \
     -CFLAGS "-std=c++17 -O2"
 
 ULITE_VERILATOR_FLAGS := \
@@ -127,7 +143,7 @@ CHI_VERILATOR_FLAGS := \
 .PHONY: help all elab elab-widths build sim run lint lint-decoder lint-widths lint-ulite lint-uc lint-chi \
         build-ulite sim-ulite cocotb-ulite formal-ulite regress regress-ulite \
         build-uc sim-uc cocotb-uc formal-uc regress-uc \
-        build-chi sim-chi cocotb-chi formal-chi regress-chi \
+        build-chi sim-chi cocotb-chi formal-chi regress-chi coverage-chi \
         coverage cov-report formal cocotb wave wave-formal wave-bmc ci clean
 
 # ---- Waveform viewer ----
@@ -331,15 +347,26 @@ cov-report: coverage
 	genhtml $(COV_INFO) -o coverage_html
 	@echo "HTML report: coverage_html/index.html"
 
+# CHI coverage — mirrors `coverage` for the TL-C -> CHI bridge.
+$(CHI_COV_EXE): $(CHI_SV) $(CHI_TB)
+	$(VERILATOR) $(CHI_COV_FLAGS) -o VTLCToCHI $(CHI_SV) $(CHI_TB)
+
+coverage-chi: $(CHI_COV_EXE)
+	cd $(CHI_COV_DIR) && ./VTLCToCHI
+	verilator_coverage --write-info $(CHI_COV_INFO) $(CHI_COV_DIR)/coverage.dat
+	@echo ""
+	@echo "CHI coverage written to $(CHI_COV_INFO)"
+	@awk -F'[,:]' '/^DA:/{lf++; if ($$3+0 > 0) lh++} END{if (lf>0) printf "CHI line coverage: %d/%d (%.1f%%)\n", lh, lf, (100.0*lh)/lf; else print "no coverable lines"}' $(CHI_COV_INFO)
+
 formal: $(SV)
 	$(MAKE) -C verification/formal all
 
 cocotb: $(SV)
 	$(MAKE) -C cocotb
 
-ci: regress coverage formal formal-ulite formal-uc cocotb cocotb-ulite cocotb-uc
+ci: regress coverage coverage-chi formal formal-ulite formal-uc formal-chi cocotb cocotb-ulite cocotb-uc cocotb-chi
 
 clean:
-	rm -rf $(GEN_DIR) $(BUILD_DIR) $(ULITE_BUILD) $(UC_BUILD) $(CHI_BUILD) $(COV_DIR) sim.vcd sim_ulite.vcd sim_uc.vcd sim_chi.vcd $(COV_INFO) coverage_html target project/target project/project
+	rm -rf $(GEN_DIR) $(BUILD_DIR) $(ULITE_BUILD) $(UC_BUILD) $(CHI_BUILD) $(COV_DIR) $(CHI_COV_DIR) sim.vcd sim_ulite.vcd sim_uc.vcd sim_chi.vcd $(COV_INFO) $(CHI_COV_INFO) coverage_html target project/target project/project
 	$(MAKE) -C verification/formal clean
 	rm -rf cocotb/sim_build cocotb/sim_build_ulite cocotb/sim_build_uc cocotb/sim_build_chi cocotb/__pycache__ cocotb/results.xml cocotb/*.vcd

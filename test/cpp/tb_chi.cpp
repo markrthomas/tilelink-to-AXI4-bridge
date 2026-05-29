@@ -44,6 +44,8 @@ static constexpr int REQ_AtomicLoadEor  = 0x4A;
 static constexpr int REQ_AtomicLoadSet  = 0x4B;
 static constexpr int REQ_AtomicLoadSmax = 0x4C;
 static constexpr int REQ_AtomicLoadSmin = 0x4D;
+static constexpr int REQ_AtomicLoadUmax = 0x4E;
+static constexpr int REQ_AtomicLoadUmin = 0x4F;
 static constexpr int REQ_AtomicSwap     = 0x50;
 // CHI RSP opcodes
 static constexpr int RSP_SnpResp        = 0x01;
@@ -57,8 +59,12 @@ static constexpr int DAT_CopyBackWrData = 0x02;
 static constexpr int DAT_NonCopyBackWr  = 0x03;
 static constexpr int DAT_CompData       = 0x04;
 // CHI SNP opcodes
-static constexpr int SNP_SnpShared      = 0x01;
-static constexpr int SNP_SnpUnique      = 0x07;
+static constexpr int SNP_SnpShared        = 0x01;
+static constexpr int SNP_SnpClean         = 0x02;
+static constexpr int SNP_SnpNotSharedDirty= 0x04;
+static constexpr int SNP_SnpUnique        = 0x07;
+static constexpr int SNP_SnpCleanInvalid  = 0x09;
+static constexpr int SNP_SnpMakeInvalid   = 0x0A;
 // CHI Cache States
 static constexpr int CHI_I              = 0x0;
 static constexpr int CHI_SC             = 0x1;
@@ -798,6 +804,22 @@ int main(int argc, char** argv) {
     run_snoop(SNP_SnpUnique, 0x13, 1, 0xC000, OP_ProbeAckData, P_TtoN,
               snp_data2, B_toN, 0x4, true);
 
+    // 5-8. Remaining Snp* opcodes (toB-flavored keep shared, toN-flavored
+    //      invalidate).  Driven with a clean ProbeAck.
+    run_snoop(SNP_SnpClean,          0x14, 1, 0xD000, OP_ProbeAck, P_TtoB,
+              {}, B_toB, CHI_SC, false);
+    run_snoop(SNP_SnpNotSharedDirty, 0x15, 1, 0xD040, OP_ProbeAck, P_TtoB,
+              {}, B_toB, CHI_SC, false);
+    run_snoop(SNP_SnpCleanInvalid,   0x16, 1, 0xD080, OP_ProbeAck, P_TtoN,
+              {}, B_toN, CHI_I,  false);
+    run_snoop(SNP_SnpMakeInvalid,    0x17, 1, 0xD0C0, OP_ProbeAck, P_TtoN,
+              {}, B_toN, CHI_I,  false);
+    // SnpCleanInvalid carrying dirty data back (ProbeAckData TtoN -> 0x4).
+    std::vector<uint64_t> snp_data3;
+    for (int i = 0; i < BEATS_PER_LINE; i++) snp_data3.push_back(0xD117D00D00000000ULL | i);
+    run_snoop(SNP_SnpCleanInvalid,   0x18, 1, 0xD100, OP_ProbeAckData, P_TtoN,
+              snp_data3, B_toN, 0x4, true);
+
     // ================= Stage 6: uncached / atomic =================
     // Drives a TL-A Get/Put/Hint/Atomic, waits for the D response, and
     // checks the CHI REQ opcode the HN observed plus (optionally) the D
@@ -892,8 +914,97 @@ int main(int argc, char** argv) {
     run_uncached("AmoSwap", OP_Logical, L_SWAP, 5, 3, {0x1234567889ABCDEFULL},
                  REQ_AtomicSwap, D_AccessAckData, {oldVal(0x45)}, {0x1234567889ABCDEFULL});
 
+    // ================= Randomized sweep =================
+    // Seeded for reproducibility (mirrors the TLUH 0xC0FFEE workload in
+    // spirit).  The CHI TB drives transactions sequentially, so this
+    // stresses decode / opcode-mapping / arbitration ordering across all
+    // four engines with rotating sources rather than concurrency (engine
+    // overlap is covered by the formal cover goals).
+    std::mt19937 rng(0xC0FFEE);
+    const int SWEEP_JOBS = 120;
+    int snpTid = 0x20;
+    for (int n = 0; n < SWEEP_JOBS; n++) {
+        int kind = rng() % 4;
+        int src  = 1 + (rng() % 14);          // 1..14 (fits sourceBits=4)
+        int uncTid = (src & 0xF) | 0x40;
+        if (kind == 0) {                       // ---- acquire ----
+            int v = rng() % 4;
+            int op    = (v == 3) ? OP_AcqPerm : OP_AcqBlock;
+            int param = (v == 0) ? P_NtoB : (v == 1) ? P_NtoT : (v == 2) ? P_BtoT : P_NtoT;
+            bool needsData = (op == OP_AcqBlock) && (param == P_NtoB || param == P_NtoT);
+            int exp_op    = needsData ? D_GrantData : D_Grant;
+            int exp_param = (op == OP_AcqBlock && param == P_NtoB) ? P_toB : P_toT;
+            run_acquire(op, param, src, exp_op, exp_param);
+        } else if (kind == 1) {                // ---- release ----
+            int v = rng() % 4;
+            if (v == 0)      run_release(OP_Release, P_TtoN, src, {}, REQ_Evict);
+            else if (v == 1) run_release(OP_Release, P_BtoN, src, {}, REQ_Evict);
+            else {
+                int param = (v == 2) ? P_TtoN : P_TtoB;
+                int reqop = (param == P_TtoB) ? REQ_WriteCleanFull : REQ_WriteBackFull;
+                std::vector<uint64_t> d;
+                for (int i = 0; i < BEATS_PER_LINE; i++)
+                    d.push_back(((uint64_t)rng() << 32) | rng());
+                run_release(OP_ReleaseData, param, src, d, reqop);
+            }
+        } else if (kind == 2) {                // ---- snoop ----
+            int sv = rng() % 4;
+            int snp_op = (sv == 0) ? SNP_SnpShared : (sv == 1) ? SNP_SnpUnique
+                       : (sv == 2) ? SNP_SnpCleanInvalid : SNP_SnpClean;
+            bool withData = (rng() % 2) == 0;
+            int pa_op    = withData ? OP_ProbeAckData : OP_ProbeAck;
+            int pa_param = (rng() % 2) ? P_TtoB : P_TtoN;
+            std::vector<uint64_t> pa;
+            if (withData)
+                for (int i = 0; i < BEATS_PER_LINE; i++)
+                    pa.push_back(((uint64_t)rng() << 32) | rng());
+            int exp_rc = withData ? ((pa_param == P_TtoB) ? 0x5 : 0x4)
+                                  : ((pa_param == P_TtoB) ? CHI_SC : CHI_I);
+            int exp_b = (snp_op == SNP_SnpUnique || snp_op == SNP_SnpCleanInvalid)
+                        ? B_toN : B_toB;
+            run_snoop(snp_op, snpTid++, 1, 0xE000 | (n << 6),
+                      pa_op, pa_param, pa, exp_b, exp_rc, withData);
+        } else {                               // ---- uncached / atomic ----
+            int uv = rng() % 6;
+            uint64_t w = ((uint64_t)rng() << 32) | rng();
+            if (uv == 0)
+                run_uncached("rGet", OP_Get, 0, src, 3, {}, REQ_ReadOnce,
+                             D_AccessAckData, getPat(uncTid, 1), {});
+            else if (uv == 1)
+                run_uncached("rPut", OP_PutFull, 0, src, 3, {w}, REQ_WriteUniqueFull,
+                             D_AccessAck, {}, {w});
+            else if (uv == 2) {
+                int p = rng() % 2;
+                run_uncached("rHint", OP_Hint, p, src, 6, {},
+                             p == 0 ? REQ_CleanShared : REQ_CleanInvalid, D_HintAck, {}, {});
+            } else if (uv == 3) {
+                int p = rng() % 5;
+                int rq = (p == 0) ? REQ_AtomicLoadSmin : (p == 1) ? REQ_AtomicLoadSmax
+                       : (p == 2) ? REQ_AtomicLoadUmin : (p == 3) ? REQ_AtomicLoadUmax
+                       : REQ_AtomicLoadAdd;
+                run_uncached("rArith", OP_Arithmetic, p, src, 3, {w}, rq,
+                             D_AccessAckData, {oldVal(uncTid)}, {w});
+            } else if (uv == 4) {
+                int ch[3] = {L_XOR, L_OR, L_SWAP};
+                int p = ch[rng() % 3];
+                int rq = (p == L_XOR) ? REQ_AtomicLoadEor
+                       : (p == L_OR)  ? REQ_AtomicLoadSet : REQ_AtomicSwap;
+                run_uncached("rLog", OP_Logical, p, src, 3, {w}, rq,
+                             D_AccessAckData, {oldVal(uncTid)}, {w});
+            } else {
+                run_uncached("rAnd", OP_Logical, L_AND, src, 3, {w}, REQ_AtomicLoadClr,
+                             D_AccessAckData, {oldVal(uncTid)}, {~w});
+            }
+        }
+    }
+
     tfp->close();
     delete dut;
+#if VM_COVERAGE
+    // Dump coverage points to coverage.dat in CWD for verilator_coverage.
+    Verilated::threadContextp()->coveragep()->write("coverage.dat");
+#endif
     if (errs > 0) { std::printf("FAILED with %d errors\n", errs); return 1; }
-    std::printf("CHI Stage 6 TB: PASS\n"); return 0;
+    std::printf("CHI Stage 7 TB: PASS (28 directed + %d randomized jobs)\n", SWEEP_JOBS);
+    return 0;
 }

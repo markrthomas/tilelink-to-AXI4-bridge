@@ -1,10 +1,10 @@
 # tlctochi.sby — SymbiYosys proof script for TLCToCHI
 #
-# Focused on Stage 2 (Read-shared) behaviors.
+# Covers Stages 2–6 (read / release / snoop / uncached + atomic).
 #
 # Tasks:
-#   bmc   — safety: F-CHI-1..3
-#   cover — reachability: AcquireBlock completes
+#   bmc   — safety: F-CHI-1..11
+#   cover — reachability: 19 cover goals across all four engines
 
 [tasks]
 bmc
@@ -13,7 +13,7 @@ cover
 [options]
 bmc:   mode bmc
 cover: mode cover
-depth 20
+depth 30
 
 [engines]
 smtbmc yices

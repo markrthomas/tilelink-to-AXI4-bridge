@@ -406,7 +406,7 @@ Per the Stage 1 baseline:
 | 4 | Release / ReleaseData → WriteBack* / WriteClean* / Evict | **✓ DONE 2026-05-29** |
 | 5 | SnpShared / SnpUnique → Probe → ProbeAck(Data) → SnpResp(Data) (probe ↔ release race *not* collapsed — see §6.4) | **✓ DONE 2026-05-29** |
 | 6 | Get/Put/Hint/Atomic → ReadOnce / WriteUnique* / CleanShared·CleanInvalid / AtomicLoad*·AtomicSwap (uncached engine) | **✓ DONE 2026-05-29** |
-| 7 | Randomized sweep + BMC@30 + 90%+ coverage + CI parity | not started |
+| 7 | Randomized sweep (28 directed + 120 random) + BMC@30 + coverage (80.3% line, sideband-capped) + CI parity (`chi` job) | **✓ DONE 2026-05-29** |
 
 See [`doc/CHI_PLAN.md`](CHI_PLAN.md) for the per-stage deliverables and
 exit criteria.

@@ -88,3 +88,33 @@ jobs:
         uses: YosysHQ/setup-oss-cad-suite@v3
       - name: BMC + cover (make formal)
         run: make formal
+
+  # TL-C → CHI bridge — full surface in one job (lint + directed +
+  # randomized sim via regress-chi, BMC depth 30 + cover, cocotb,
+  # coverage), parallel to the four jobs above.
+  chi:
+    needs: regress
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+      - uses: sbt/setup-sbt@v1
+      - name: Install verilator + icarus + cocotb + lcov
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator iverilog lcov
+          python3 -m pip install --user 'cocotb==1.8.1'
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+      - name: Install OSS CAD Suite (SymbiYosys + Yosys + solvers)
+        uses: YosysHQ/setup-oss-cad-suite@v3
+      - name: Lint + directed + randomized simulation (make regress-chi)
+        run: make regress-chi
+      - name: BMC depth 30 + cover (make formal-chi)
+        run: make formal-chi
+      - name: cocotb tests (make cocotb-chi)
+        run: make cocotb-chi
+      - name: Coverage (make coverage-chi)
+        run: make coverage-chi

@@ -361,7 +361,98 @@ by the TL-UH bridge.
 
 ---
 
-## 9. Known gaps
+## 9. TL-C → CHI bridge (`TLCToCHI`)
+
+CHI Issue-E RN-F bridge with four engines running in parallel — acquire,
+release, snoop, and uncached/atomic.  TxnID is a 2-bit partition
+(`{2'b00,src}` acquire, `{2'b10,src}` release, `{2'b01,src}` uncached);
+the snoop engine echoes the HN-chosen txnID.  All formal artifacts live
+at [`verification/formal/tlctochi_props.sv`](../verification/formal/tlctochi_props.sv).
+
+### 9.1 Formal safety assertions (BMC depth 30)
+
+| ID | Property | Engine |
+|----|----------|--------|
+| F-CHI-1 | REQ opcode matches the snapshot `{opcode,param}` (acquire: NtoB→ReadShared, NtoT→ReadUnique, BtoT/AcquirePerm→MakeUnique; release: Release→Evict, ReleaseData(TtoB)→WriteCleanFull, (TtoN)→WriteBackFull) | Acquire, Release |
+| F-CHI-2 | Every `txrsp` beat is exactly CompAck or SnpResp; CompAck `txnID == {0, acq_source}` | Acquire |
+| F-CHI-3 | Grant/GrantData carry the acquire source; ReleaseAck carries the release source | Acquire, Release |
+| F-CHI-4 | Every `txdat` beat is exactly CopyBackWrData / NonCopyBackWrData / SnpRespData; CopyBackWrData implies a live release | Release |
+| F-CHI-5 | txnID partition — acquire REQs in `{ReadShared,ReadUnique,MakeUnique}`, release REQs in `{Evict,WriteCleanFull,WriteBackFull}` | Acquire, Release |
+| F-CHI-6 | SnpResp (txrsp) / SnpRespData (txdat) fire only while a snoop is in flight and echo the snoop txnID | Snoop |
+| F-CHI-7 | TL-B Probe valid only with a live snoop; Probe addr = snoop line addr; param toN for invalidating snoops, else toB | Snoop |
+| F-CHI-8 | Probe/Release race determinism — each shared txrsp/txdat beat is owned by exactly one engine (no double-claim) | Snoop, Release, Acquire |
+| F-CHI-9 | Uncached REQ opcode = documented map of TL-A `{opcode,param}` (Get→ReadOnce, Put→WriteUnique*, Hint→CleanShared/CleanInvalid, Arith/Logical→AtomicLoad*/Swap) | Uncached |
+| F-CHI-10 | NonCopyBackWrData fires only with a live uncached write/atomic (never Get/Hint) | Uncached |
+| F-CHI-11 | AccessAck/AccessAckData/HintAck fire only with a live uncached snapshot, carry its source, and match the op class | Uncached |
+
+**Result:** all pass at BMC depth 30 (`make formal-chi`).  Formal scopes
+TL-A to single-beat (`size ≤ beat`) so each A.fire is owned by exactly
+one engine; multi-beat Put is exercised in sim/cocotb.
+
+### 9.2 Formal cover goals (19, all reached)
+
+Grant, GrantData, ReleaseAck, CopyBackWrData, Evict, WriteBackFull,
+Probe issued, SnpResp, SnpRespData, probe∧release both in flight,
+snoop∧acquire both in flight, ReadOnce, WriteUniqueFull, CleanShared,
+AtomicLoadAdd, AtomicSwap, NonCopyBackWrData, AccessAckData, HintAck.
+
+### 9.3 Formal environment assumptions
+
+| ID | Assumption | Rationale |
+|----|------------|-----------|
+| CHI-A1 | `a.opcode ∈ {0..7}`; acquire (6,7) param ≤2, logical (3) param ≤3, else param ≤4; `a.size ≤ 3` | Full A envelope, single-beat scope |
+| CHI-C1 | `c.opcode ∈ {4..7}` (ProbeAck/Data, Release/Data), `c.param ≤ 2` | Legal C traffic |
+| CHI-S1 | `rxsnp.opcode ∈ {SnpShared, SnpClean, SnpNotSharedDirty, SnpUnique, SnpCleanInvalid, SnpMakeInvalid}` | Implemented snoop set |
+| CHI-T1 | `txreq/txrsp/txdat.ready` always high; `tl.b.ready` always high | Open-loop bridge view, no Probe stall |
+
+### 9.4 Scoreboard-level checks (Verilator C++ TB)
+
+Run in `make sim-chi` (28 directed + 120 randomized jobs, seed `0xC0FFEE`).
+Defined in [`test/cpp/tb_chi.cpp`](../test/cpp/tb_chi.cpp) with a
+hand-rolled CHI Home Node model.
+
+| ID | Check | Scope |
+|----|-------|-------|
+| CHITB-S1 | Acquire D opcode/param match the requested NtoB/NtoT/BtoT/AcquirePerm | Acquire mapping |
+| CHITB-S2 | Release completes (HN sees Evict, or CompDBIDResp + all CopyBackWrData beats) | Release writeback |
+| CHITB-S3 | Snoop SnpResp/SnpRespData resp code matches the ProbeAck(Data) param; data beats == line for *Data | Snoop |
+| CHITB-S4 | Uncached REQ opcode == documented map; D opcode == AccessAck/AccessAckData/HintAck | Uncached mapping |
+| CHITB-S5 | Get/Atomic read-return data == HN pattern; Put/Atomic operand on the wire == sent data (inverted for AND→Clr) | Data path |
+| CHITB-S6 | Randomized sweep: all four engines, rotating sources, every job's expecteds re-derived | Ordering / breadth |
+
+### 9.5 Cocotb directed tests (Icarus)
+
+Run in `make cocotb-chi`.  Defined in
+[`cocotb/test_chi.py`](../cocotb/test_chi.py).
+
+| Test | Coverage |
+|------|----------|
+| `test_acquire_mixed` | NtoB/NtoT/BtoT/AcquirePerm → Grant(Data) → GrantAck |
+| `test_release_mixed` | Evict + WriteBackFull/WriteCleanFull, writeback data verified |
+| `test_snoop_mixed` | SnpShared/SnpUnique × ProbeAck/ProbeAckData → SnpResp(Data) |
+| `test_uncached_mixed` | Get/Put/Hint, Atomic-Add, Atomic-And (operand-inversion) |
+
+### 9.6 Lint
+
+Run in `make lint-chi`.  Verilator `--lint-only -Wall` clean at 0
+warnings with the shared `UNUSEDSIGNAL`/`UNUSEDPARAM` suppressions.
+
+### 9.7 Coverage
+
+`make coverage-chi` reports **80.3 % line** (362/451).  Of the 89
+uncovered lines, ~75 are **structural** — module port-list declarations
+for unused CHI Issue-E sidebands (`qos`, `tgtID`, `srcID`, `returnNID`,
+`lpID`, `pCrdType`, `traceTag`, `fwdState`, `cBusy`, `tag`, `respErr`,
+`poison`, `dataCheck`, `tagOp`, `ccID`, `tu`) and tied-off TL fields
+(`b.data`, `b.source`, `d.sink`, `d.corrupt`).  The remaining ~14 are the
+`respErr → denied/corrupt` error branches, which the HN model never
+injects (single-master, error-free fabric assumption — see §10).  Raw
+line % is structurally capped by the large unused Issue-E sideband port
+surface; behavioral coverage of the four engines is effectively complete.
+
+---
+
+## 10. Known gaps
 
 These are tracked in `doc/PLAN.md` under longer horizon; listing here
 so reviewers see the catalog's edges:
@@ -375,3 +466,15 @@ so reviewers see the catalog's edges:
 - **TL-UL randomized sweep.**  The TL-UL → AXI4-Lite C++ TB has 24
   directed jobs only; a randomized op-mix sweep would mirror the TL-UH
   bridge's 100-job random workload.
+- **TL-C → CHI error injection.**  The CHI HN model returns no `respErr`,
+  so the bridge's `denied`/`corrupt` propagation (Get/Atomic read-return)
+  is wired but unexercised — the ~14 behavioral lines uncovered in §9.7.
+- **TL-C → CHI probe↔release collapse.**  The bridge does not collapse a
+  Probe racing a same-line Release (engines complete independently;
+  F-CHI-8 proves no cross-engine corruption).  True collapse plus the CHI
+  §B2 ExpCompAck hazard interplay is deferred.
+- **TL-C → CHI atomics.**  No `AtomicCompare` (TL has no CAS); atomics are
+  single-beat; AND maps to `AtomicClr` with the operand inverted.
+- **TL-C → CHI multi-beat Put in formal.**  Formal scopes TL-A to
+  single-beat; the multi-beat line-buffer collect path is covered only in
+  sim/cocotb.
