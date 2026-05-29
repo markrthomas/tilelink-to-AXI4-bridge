@@ -277,13 +277,13 @@ formal-chi: $(CHI_SV)
 cocotb-chi: $(CHI_SV)
 	$(MAKE) -C cocotb chi
 
-# Regress includes lint-chi (Stage 1 deliverable).  sim-chi / formal-chi /
-# cocotb-chi gate on Stage 2+ deliverables and are NOT in the default
-# regress until those land.
-regress: lint lint-decoder lint-widths lint-ulite lint-uc lint-chi sim sim-ulite sim-uc
+# Regress wires in CHI sim now that Stage 3 (NtoB / NtoT / BtoT /
+# AcquirePerm) is exercised end-to-end.  formal-chi and cocotb-chi
+# join `ci` once Stages 4+ land more surface.
+regress: lint lint-decoder lint-widths lint-ulite lint-uc lint-chi sim sim-ulite sim-uc sim-chi
 regress-ulite: lint-ulite sim-ulite
 regress-uc: lint-uc sim-uc
-regress-chi: lint-chi
+regress-chi: lint-chi sim-chi
 
 # --------- Waveforms ---------
 # `wave` runs the sim (refreshing sim.vcd if anything changed) and pops up

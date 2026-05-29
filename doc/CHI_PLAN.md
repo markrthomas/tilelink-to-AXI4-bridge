@@ -1,7 +1,7 @@
 # TL-C → CHI Bridge — Staged Implementation Plan
 
-**Status:** Stage 1 landed 2026-05-28; Stages 2–7 pending.
-**As of:** 2026-05-28
+**Status:** Stages 1–3 landed 2026-05-29; Stages 4–7 pending.
+**As of:** 2026-05-29
 **Direction:** TL-C upstream → CHI Issue-E downstream
 **Module name:** `TLCToCHI`
 
@@ -84,7 +84,7 @@ the `chi` variant slot in Stage 1 and stays green from then on.
 - No regression: full `make regress` PASS — TLUH 183 jobs, ULite 24
   jobs, UC 11 jobs, all 0 errors; all 6 lint targets clean.
 
-### Stage 2 — Read-shared path
+### ~~Stage 2 — Read-shared path~~ ✓ DONE 2026-05-29
 
 The simplest end-to-end story: a cold `AcquireBlock(NtoB)` returns a
 clean shared copy.  Proves the channel plumbing.
@@ -96,21 +96,12 @@ clean shared copy.  Proves the channel plumbing.
 | DAT `CompData(SC)` | TL-D `GrantData(toB)` |
 | RSP `Comp` (when `ExpCompAck=1`) | TL-E `GrantAck` → CHI RSP `CompAck` |
 
-**Deliverables**
-- TL-A → REQ issue path with TxnID allocation table
-- DAT → TL-D forwarding (byte enables, partial returns, beat assembly)
-- TL-E → CHI RSP `CompAck` reverse path
-- `test/cpp/tb_chi.cpp` — minimal CHI HN model that always returns `SC`
-- 1 cocotb test (`test_acquire_ntob`)
-- Formal: F-CHI-1 (TxnID conservation across REQ/DAT/RSP),
-  F-CHI-2 (no GrantData without a matching prior AcquireBlock)
+Landed with the Stage 3 work — the acquire engine in
+`TLCToCHI.scala` handles all four cases together (NtoB, NtoT, BtoT,
+AcquirePerm), since the state machine is identical and the divergence
+is purely opcode/needsData selection at A.fire.
 
-**Exit criteria**
-- `make sim-chi` PASS on 5+ directed `AcquireBlock(NtoB)` jobs
-- BMC depth 20 PASS
-- 1 cocotb test green
-
-### Stage 3 — Read-unique path
+### ~~Stage 3 — Read-unique path~~ ✓ DONE 2026-05-29
 
 **Mapping**
 | TL | CHI |
@@ -121,11 +112,24 @@ clean shared copy.  Proves the channel plumbing.
 | DAT `CompData(UC)` / `CompData(UD)` | TL-D `GrantData(toT)` |
 | RSP `Comp` (UC, no data) | TL-D `Grant(toT)` |
 
-**Verification additions**
-- Permission upgrade cases (cold T, B→T)
-- Cocotb: `test_acquire_ntot`, `test_make_unique_btot`
-- Formal: F-CHI-3 (permission monotonicity — D.param consistent with
-  request, modulo SC/UC ambiguity)
+**Deliverables (all landed)**
+- Acquire engine in `TLCToCHI.scala`: A → REQ issue path
+  (snapshot at A.fire), CompData / Comp → D, TL-E → CHI CompAck.
+- `test/cpp/tb_chi.cpp` — Verilator TB with a CHI HN model that
+  serves ReadShared / ReadUnique / MakeUnique end-to-end.
+- `cocotb/env_chi.py` + `cocotb/test_chi.py` — single
+  `test_acquire_mixed` exercising all four acquire cases.
+- `verification/formal/tlctochi_props.sv` — F-CHI-1
+  (REQ opcode matches snapshot {opcode,param}), F-CHI-2 (CompAck
+  txnID matches snapshot source), F-CHI-3 (D.source = snapshot
+  source).  Two cover goals: Grant and GrantData both reachable.
+
+**Exit criteria met**
+- `make sim-chi` PASS: 4 directed jobs (NtoB, NtoT, BtoT, AcquirePerm).
+- `make formal-chi` BMC depth 20 PASS, both cover goals reached.
+- `make cocotb-chi` PASS: 1 test.
+- `make regress` PASS — TLUH 183 jobs, ULite 24, UC 11, CHI 4; all
+  lints clean.
 
 ### Stage 4 — Release path
 
@@ -296,25 +300,31 @@ doc/
 
 ## 8. Status & next step
 
-**Stage 1 landed 2026-05-28.**  Skeleton + spec + Makefile/lint slot
-all in.  No functional behavior yet.
+**Stages 1–3 landed 2026-05-29.**  Skeleton + spec + Makefile slot
+(Stage 1), then the full read path covering NtoB / NtoT / BtoT /
+AcquirePerm in a single acquire engine (Stages 2 & 3 collapsed into
+one delivery since the divergence is opcode-selection-only).
 
 The four open questions in §2 were settled as follows:
 1. **DCT/DMT:** off for Stage 1; revisit at Stage 5.
-2. **CHI HN model:** hand-roll from the spec (Stage 2 deliverable).
+2. **CHI HN model:** hand-rolled from the spec (landed in Stage 3
+   at `test/cpp/tb_chi.cpp` and `cocotb/env_chi.py`).
 3. **Multi-line atomics:** confirmed disallowed — bridge will enforce
    `a.size ≤ log2(lineBytes)` for atomics at elaboration.
-4. **Cache line:** pinned at 64 B for Stage 1.
+4. **Cache line:** pinned at 64 B.
 
-**Next step is a separate go-ahead** to start Stage 2 (read-shared
-path: AcquireBlock(NtoB) → ReadShared → CompData → GrantData → GrantAck
-→ CompAck).  Budget: 3–4 weeks of focused work.  Will need:
-- The first real Chisel logic in `TLCToCHI.scala` (read engine,
-  CompAck reverse path, txnID allocation table, GrantData beat
-  assembly with `dataID` ordering).
-- A hand-rolled CHI Home Node model in `test/cpp/tb_chi.cpp` plus
-  `cocotb/env_chi.py` (the CHI-side equivalent of the existing AXI
-  slave models).
-- First two formal properties (F-CHI-1 TxnID conservation, F-CHI-2 no
-  spurious GrantData) at `verification/formal/tlctochi_props.sv`.
+**Next step is a separate go-ahead** to start Stage 4 (release path:
+`Release(TtoB)` → `WriteCleanFull`, `ReleaseData(TtoN)` →
+`WriteBackFull`, `Release(TtoN, clean)` / `Release(BtoN)` →
+`Evict`, with CHI `Comp` → TL `ReleaseAck`).  Budget: 3 weeks.
+Will need:
+- A release engine in `TLCToCHI.scala` parallel to the existing
+  acquire engine (C-channel intake + REQ issue + DAT write + RSP
+  consumption + D-channel `ReleaseAck`).
+- TL master driver extension in `tb_chi.cpp` and `env_chi.py` to
+  emit C-channel Release / ReleaseData traffic and consume the
+  resulting D-channel `ReleaseAck`.
+- F-CHI-4 (every Release path produces exactly one ReleaseAck)
+  and F-CHI-5 (data preservation across WriteBack → ReadShared
+  roundtrip).
 - One cocotb test (`test_acquire_ntob`) and 5+ directed C++ jobs.

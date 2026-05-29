@@ -27,7 +27,7 @@ async def reset_dut(dut, cycles: int = 8):
     set_safe("io_tl_e_bits_sink", 0)
     
     # CHI inputs (RN rx side)
-    set_safe("io_chi_txreq_ready", 1) # Default ready=1 for HN model
+    set_safe("io_chi_txreq_ready", 1)
     set_safe("io_chi_txrsp_ready", 1)
     set_safe("io_chi_txdat_ready", 1)
     
@@ -42,7 +42,7 @@ async def reset_dut(dut, cycles: int = 8):
     dut._log.info("Reset complete")
 
 class CHIHN:
-    """Minimal CHI Home Node model."""
+    """CHI Home Node model supporting ReadShared, ReadUnique, MakeUnique."""
     def __init__(self, dut):
         self.dut = dut
         self.dut.io_chi_txreq_ready.value = 1
@@ -58,20 +58,32 @@ class CHIHN:
             if self.dut.io_chi_txreq_valid.value == 1:
                 opcode = int(self.dut.io_chi_txreq_bits_opcode.value)
                 tid = int(self.dut.io_chi_txreq_bits_txnID.value)
-                if opcode == 0x01: # ReadShared
+                if opcode in [0x01, 0x07]: # ReadShared, ReadUnique
                     # Send 8 beats of CompData
+                    resp_state = 0x2 if opcode == 0x07 else 0x1 # UC vs SC
                     for i in range(8):
                         self.dut.io_chi_rxdat_valid.value = 1
                         self.dut.io_chi_rxdat_bits_opcode.value = 0x4 # CompData
                         self.dut.io_chi_rxdat_bits_txnID.value = tid
                         self.dut.io_chi_rxdat_bits_data.value = 0xDEADC0DE00000000 | (tid << 12) | i
-                        self.dut.io_chi_rxdat_bits_resp.value = 0x1 # SC
+                        self.dut.io_chi_rxdat_bits_resp.value = resp_state
                         self.dut.io_chi_rxdat_bits_dataID.value = i
                         while True:
                             await RisingEdge(self.dut.clock)
                             if self.dut.io_chi_rxdat_ready.value == 1:
                                 break
                     self.dut.io_chi_rxdat_valid.value = 0
+                elif opcode == 0x0C: # MakeUnique
+                    # Send Comp(UC) on rxrsp
+                    self.dut.io_chi_rxrsp_valid.value = 1
+                    self.dut.io_chi_rxrsp_bits_opcode.value = 0x4 # Comp
+                    self.dut.io_chi_rxrsp_bits_txnID.value = tid
+                    self.dut.io_chi_rxrsp_bits_resp.value = 0x2 # UC
+                    while True:
+                        await RisingEdge(self.dut.clock)
+                        if self.dut.io_chi_rxrsp_ready.value == 1:
+                            break
+                    self.dut.io_chi_rxrsp_valid.value = 0
 
 class TLMasterCHI:
     """Drives TL-C A/E and consumes D."""
@@ -80,12 +92,12 @@ class TLMasterCHI:
         self.dut.io_tl_d_ready.value = 1
         self.dut.io_tl_e_valid.value = 0
 
-    async def acquire_block_ntob(self, address, source):
-        # 1. Drive AcquireBlock(NtoB, size=6=64B)
+    async def acquire(self, opcode, param, address, source, size=6):
+        # 1. Drive Acquire
         self.dut.io_tl_a_valid.value = 1
-        self.dut.io_tl_a_bits_opcode.value = 6 # AcquireBlock
-        self.dut.io_tl_a_bits_param.value = 0 # NtoB
-        self.dut.io_tl_a_bits_size.value = 6 # 64B
+        self.dut.io_tl_a_bits_opcode.value = opcode
+        self.dut.io_tl_a_bits_param.value = param
+        self.dut.io_tl_a_bits_size.value = size
         self.dut.io_tl_a_bits_source.value = source
         self.dut.io_tl_a_bits_address.value = address
         
@@ -95,12 +107,16 @@ class TLMasterCHI:
                 break
         self.dut.io_tl_a_valid.value = 0
         
-        # 2. Collect 8 beats of GrantData
+        # 2. Collect D
         data = []
-        for _ in range(8):
+        needs_data = (opcode == 6) and (param in [0, 1]) # AcqBlock and NtoB/NtoT
+        # Wait, my RTL says acqNeedsData is true for NtoB and NtoT.
+        
+        beats = 8 if needs_data else 1
+        for _ in range(beats):
             while True:
                 if self.dut.io_tl_d_valid.value == 1:
-                    data.append(int(self.dut.io_tl_d_bits_data.value))
+                    if needs_data: data.append(int(self.dut.io_tl_d_bits_data.value))
                     await RisingEdge(self.dut.clock)
                     break
                 await RisingEdge(self.dut.clock)
