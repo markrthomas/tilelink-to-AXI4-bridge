@@ -42,13 +42,15 @@ uc-cover: $(UC_RTL_SV)
 	$(SBY) -f tluctoaxi4.sby cover
 
 # ---- TL-C → CHI variant ----
-# Stage 1 has no formal wrapper yet; the chi target prints a notice and
-# exits 0 so CI doesn't fail on its absence.  Stage 2 will land
-# tlctochi.sby + tlctochi_props.sv.
-chi:
-	@echo "[formal] chi: Stage 1 skeleton has no formal wrapper yet (see doc/CHI_PLAN.md Stage 2)"
+chi: chi-bmc
 
-chi-bmc chi-cover: chi
+chi-bmc: $(CHI_RTL_SV)
+	@command -v $(SBY) >/dev/null 2>&1 || { echo "[formal] sby not on PATH"; exit 1; }
+	$(SBY) -f tlctochi.sby bmc
+
+chi-cover: $(CHI_RTL_SV)
+	@command -v $(SBY) >/dev/null 2>&1 || { echo "[formal] sby not on PATH"; exit 1; }
+	$(SBY) -f tlctochi.sby cover
 
 clean:
 	rm -rf tluhtoaxi4_bmc tluhtoaxi4_cover tlultoaxilite_bmc tlultoaxilite_cover tluctoaxi4_bmc tluctoaxi4_cover tlctochi_bmc tlctochi_cover
