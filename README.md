@@ -3,7 +3,7 @@
 TileLink → AXI bridges, written in Chisel and verified with a Verilator
 C++ testbench, SymbiYosys formal proofs, and cocotb.
 
-This repo ships two sibling bridges:
+This repo ships three sibling bridges:
 
 - **TLUHToAXI4** — TileLink-UH (uncached heavyweight) → AXI4 master.
   Handles `Get`, `PutFullData`, `PutPartialData`, `Hint`, `ArithmeticData`,
@@ -13,22 +13,29 @@ This repo ships two sibling bridges:
   master.  Handles `Get`, `PutFullData`, `PutPartialData`, and `Hint` —
   single-beat only, 32-bit data path by default (also valid at 64-bit),
   no bursts, no atomics.  Intended for control-plane peripherals.
+- **TLUCToAXI4** — TL-C wire shape (A + B + C + D + E) with no
+  coherence → AXI4 master.  Carries the full TL-UH opcode set plus
+  `AcquireBlock`, `AcquirePerm`, `Release`, and `ReleaseData`; always
+  grants Tip on Acquire (no other sharers to invalidate); TL-B is tied
+  off because the bridge never issues a Probe.  Intended for single
+  cached masters where coherence is unnecessary, and as the stepping
+  stone for the upcoming TL-C → CHI bridge.
 
-Both bridges present a TL slave port to the host and drive an AXI master
-port to a memory-mapped subordinate.
+All three present a TL slave port to the host and drive an AXI-family
+master port to a memory-mapped subordinate.
 
 ## Directory layout
 
 | Path | Purpose |
 |------|---------|
-| `src/main/scala/tlbridge/` | Chisel sources — `TLUHToAXI4`, `TLUHToAXI4Decoder`, `TLULToAXILite`, bundles, elaboration entry |
-| `generated/` | Emitted SystemVerilog — `TLUHToAXI4.sv`, `decoder/`, `ulite/` |
-| `test/cpp/` | Verilator C++ testbenches — `tb_main.cpp` (TL-UH), `tb_ulite.cpp` (TL-UL) |
-| `cocotb/` | cocotb env + tests for both bridges — `test_bridge.py` / `env.py` (TL-UH), `test_ulite.py` / `env_ulite.py` (TL-UL) |
-| `verification/formal/` | SymbiYosys wrappers — `tluhtoaxi4_props.sv`, `tlultoaxilite_props.sv` |
-| `build/`, `build_ulite/` | Verilator object dirs (auto-generated) |
-| `doc/` | Design specs (`DESIGN_SPEC.md`, `DESIGN_SPEC_ULITE.md`) + roadmap |
-| `Makefile` | `elab` / `build` / `sim` / `lint` / `formal` / `cocotb` / `clean` (+ `-ulite` variants) |
+| `src/main/scala/tlbridge/` | Chisel sources — `TLUHToAXI4`, `TLUHToAXI4Decoder`, `TLULToAXILite`, `TLUCToAXI4`, bundles, elaboration entry |
+| `generated/` | Emitted SystemVerilog — `TLUHToAXI4.sv`, `decoder/`, `ulite/`, `uc/` |
+| `test/cpp/` | Verilator C++ testbenches — `tb_main.cpp` (TL-UH), `tb_ulite.cpp` (TL-UL), `tb_uc.cpp` (TL-UC) |
+| `cocotb/` | cocotb env + tests for all three bridges — `test_bridge.py`/`env.py` (TL-UH), `test_ulite.py`/`env_ulite.py` (TL-UL), `test_uc.py`/`env_uc.py` (TL-UC) |
+| `verification/formal/` | SymbiYosys wrappers — `tluhtoaxi4_props.sv`, `tlultoaxilite_props.sv`, `tluctoaxi4_props.sv` |
+| `build/`, `build_ulite/`, `build_uc/` | Verilator object dirs (auto-generated) |
+| `doc/` | Design specs (`DESIGN_SPEC.md`, `DESIGN_SPEC_ULITE.md`, `DESIGN_SPEC_UC.md`) + roadmap |
+| `Makefile` | `elab` / `build` / `sim` / `lint` / `formal` / `cocotb` / `clean` (+ `-ulite` / `-uc` variants) |
 | `build.sbt` | Chisel / Scala project definition |
 
 ## Design contract
@@ -36,9 +43,11 @@ port to a memory-mapped subordinate.
 [`doc/DESIGN_SPEC.md`](doc/DESIGN_SPEC.md) is the protocol reference for
 the TL-UH bridge: signal tables for both buses, opcode mapping, burst
 calculation, FSM diagram, and the list of known limitations.
-[`doc/DESIGN_SPEC_ULITE.md`](doc/DESIGN_SPEC_ULITE.md) is the sibling spec
-for the TL-UL → AXI4-Lite bridge.  Treat them as the source of truth for
-RTL behavior — the Chisel source cites them back via comments.
+[`doc/DESIGN_SPEC_ULITE.md`](doc/DESIGN_SPEC_ULITE.md) covers the TL-UL
+→ AXI4-Lite bridge.  [`doc/DESIGN_SPEC_UC.md`](doc/DESIGN_SPEC_UC.md)
+covers the TL-UC → AXI4 bridge (TL-C wire shape, no coherence).  Treat
+them as the source of truth for RTL behavior — the Chisel source cites
+them back via comments.
 
 ## Tutorial
 
@@ -79,19 +88,24 @@ stages:
 | Verilator build only (requires SV present) | `make build` |
 | Run the TL-UH simulation | `make sim` |
 | Run the TL-UL → AXI4-Lite simulation | `make sim-ulite` |
+| Run the TL-UC → AXI4 simulation | `make sim-uc` |
 | Verilator `--lint-only` (TL-UH bridge) | `make lint` |
 | Verilator `--lint-only` (address-decoded variant) | `make lint-decoder` |
 | Verilator `--lint-only` (TL-UL → AXI4-Lite variant) | `make lint-ulite` |
+| Verilator `--lint-only` (TL-UC → AXI4 variant) | `make lint-uc` |
 | Elaborate + lint `dataBits` width sweep | `make lint-widths` |
-| Lint + sim across both bridges (fast CI gate) | `make regress` |
+| Lint + sim across all three bridges (fast CI gate) | `make regress` |
 | Lint + sim for the AXI-Lite variant only | `make regress-ulite` |
+| Lint + sim for the TL-UC variant only | `make regress-uc` |
 | Coverage build + `coverage.info` (TL-UH) | `make coverage` |
 | HTML coverage report (requires `lcov`) | `make cov-report` |
 | SymbiYosys BMC + cover (TL-UH) | `make formal` |
 | SymbiYosys BMC + cover (TL-UL → AXI4-Lite) | `make formal-ulite` |
+| SymbiYosys BMC + cover (TL-UC → AXI4) | `make formal-uc` |
 | cocotb directed tests, TL-UH (Icarus) | `make cocotb` |
 | cocotb directed tests, TL-UL → AXI4-Lite (Icarus) | `make cocotb-ulite` |
-| Regress + coverage + formal + cocotb across both bridges (full local CI) | `make ci` |
+| cocotb directed tests, TL-UC → AXI4 (Icarus) | `make cocotb-uc` |
+| Regress + coverage + formal + cocotb across all three bridges (full local CI) | `make ci` |
 | Run sim and open `sim.vcd` in GTKWave | `make wave` |
 | Open the formal cover witness in GTKWave | `make wave-formal` |
 | Open the BMC counter-example (only after a failure) | `make wave-bmc` |
@@ -147,6 +161,36 @@ with no read-burst lock (it isn't needed without bursts).  Default
 [`doc/DESIGN_SPEC_ULITE.md`](doc/DESIGN_SPEC_ULITE.md) for the full
 contract.
 
+### TL-UC → AXI4 (`TLUCToAXI4`)
+
+TL-C wire shape (A + B + C + D + E) with no coherence: the bridge
+exposes all five TL-C channels, accepts cached opcodes, but the AXI4
+downstream cannot participate in coherence so no probes are ever
+issued.
+
+| TL A opcode | AXI traffic | TL D response |
+|---|---|---|
+| TL-UH opcodes (`Get`, `Put*`, `Hint`, `ArithmeticData`, `LogicalData`) | same as TLUHToAXI4 | same |
+| `AcquireBlock` (6) | `AR` + `R` | `GrantData(toT)` |
+| `AcquirePerm` (7) | *(none)* | `Grant(toT)` |
+
+| TL C opcode | AXI traffic | TL D response |
+|---|---|---|
+| `Release` (6) | *(none)* | `ReleaseAck` |
+| `ReleaseData` (7) | `AW` + `W` (full mask) | `ReleaseAck` |
+
+Bridge always returns `D.param = toT` regardless of the requested cap
+(NtoB/NtoT/BtoT) — there are no other sharers to invalidate, and TL-C
+allows granting more permission than asked.  TL-B is tied off
+(`io_tl_b_valid := 0`).  Master must respond with `GrantAck` on TL-E
+after every Grant/GrantData to release the Acquire engine slot.  Six
+parallel engines (read, write, hint, atomic, acquire, release) plus a
+local-error slot share TL-D via a fixed-priority arbiter
+(`W > R > Atom > Acq > Rel > Hint > Err`) with a sticky burst lock for
+multi-beat `AccessAckData` and `GrantData`.  See
+[`doc/DESIGN_SPEC_UC.md`](doc/DESIGN_SPEC_UC.md) for the full
+contract.
+
 ## Status snapshot
 
 | Area | Status |
@@ -156,12 +200,15 @@ contract.
 | TL-UH random sim | 100 Put/Get/Hint randomized jobs + 24 atomic-init pairs (`0x4000+`) per run (seed `0xC0FFEE`, rotating sources, full op mix incl. PutPartialData and Arith/Logic atomics) |
 | TL-UH last result | **PASS** — 183 jobs, 0 errors, 1442 sim ticks, peak concurrency=3 |
 | TL-UL → AXI4-Lite sim | `make sim-ulite` — 24 directed jobs (aligned put/get, every byte lane, half-word at both halves, partial mask, hint, three-engine concurrency, AXI SLVERR + DECERR injection, unsupported opcode, oversized request).  **PASS** — 24 jobs, 0 errors, peak concurrency=3 |
-| Lint | `make lint` + `make lint-ulite` both clean (0 warnings, 5 documented `UNUSEDSIGNAL` suppressions on TL-UH) |
+| TL-UC → AXI4 sim | `make sim-uc` — 11 directed jobs (AcquireBlock(NtoT/NtoB) full cache line, AcquirePerm(NtoT), Release(TtoN), ReleaseData(TtoN), TL-UH Put+Get+Hint carry-over, AXI read-error injection on AcquireBlock).  **PASS** — 11 jobs, 0 errors, peak concurrency=2 |
+| Lint | `make lint` + `make lint-ulite` + `make lint-uc` all clean (0 warnings, 5 documented `UNUSEDSIGNAL` suppressions on TL-UH/TL-UC) |
 | Width sweep | `make lint-widths` clean for `dataBits ∈ {32, 64, 128, 256}` (TL-UH) |
 | Coverage | 95.1% line (232/244) — above the 80% DV_STANDARDS floor (TL-UH) |
 | Formal — TL-UH | `make formal` — BMC depth 30 + 4 cover witnesses (per-engine F2 / F3 incl. atomic, F6 / F8, F-LOCK, corrupt-discipline) |
 | Formal — TL-UL → AXI4-Lite | `make formal-ulite` — BMC depth 20 + 4 cover witnesses (per-engine F2 / F3, F-UL-1 alignment, no-corrupt on AccessAck/HintAck) |
+| Formal — TL-UC → AXI4 | `make formal-uc` — BMC depth 30 + 5 cover witnesses (F-UC-1 B-tied-off, F-UC-2 GrantData, F-UC-3 Grant, F-UC-4 ReleaseAck, F-UC-5 AR alignment + no lock) |
 | Cocotb — TL-UH | `make cocotb` — 9 directed tests on Icarus (`cocotb/test_bridge.py`, incl. atomic add/xor/swap) |
 | Cocotb — TL-UL → AXI4-Lite | `make cocotb-ulite` — 5 directed tests on Icarus (`cocotb/test_ulite.py`: aligned put/get, byte lanes, half-word, partial put, hint) |
+| Cocotb — TL-UC → AXI4 | `make cocotb-uc` — 6 directed tests on Icarus (`cocotb/test_uc.py`: AcquireBlock NtoT/NtoB, AcquirePerm, Release, ReleaseData, TL-UH carry-over) |
 | GitHub Actions CI | `.github/workflows/ci.yml` with regress / coverage / formal / cocotb jobs |
 | Address-decoded variant | `TLUHToAXI4Decoder` (structural) — emitted to `generated/decoder/`, `make lint-decoder` clean. See `doc/DESIGN_SPEC.md#address-decoded-variant` for the master-side assumptions; full multi-port TB is a follow-up. |

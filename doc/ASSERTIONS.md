@@ -1,6 +1,6 @@
 # Assertions & Properties — tilelink_to_AXI4
 
-**As of:** 2026-05-28 (added TL-UL → AXI4-Lite variant)
+**As of:** 2026-05-28 (added TL-UL → AXI4-Lite and TL-UC → AXI4 variants)
 
 Single catalog of every property used to validate the bridges in this
 repo — formal assertions, formal environment assumptions, cover goals,
@@ -10,9 +10,10 @@ failure so you can quickly find where a claim is made.
 
 Sections §1–§6 cover the **TL-UH → AXI4 bridge** (`TLUHToAXI4`), which
 has four execution engines (read, write, hint, atomic).  Section §7
-covers the sibling **TL-UL → AXI4-Lite bridge** (`TLULToAXILite`), which
-has three engines (read, write, hint) plus a local-error slot and no
-bursts/atomics.
+covers the sibling **TL-UL → AXI4-Lite bridge** (`TLULToAXILite`).
+Section §8 covers the **TL-UC → AXI4 bridge** (`TLUCToAXI4`), which
+adds Acquire/Release engines and the TL-C B/C/E channels on top of the
+TL-UH engines.
 
 ---
 
@@ -270,7 +271,97 @@ clean at 0 warnings.
 
 ---
 
-## 8. Known gaps
+## 8. TL-UC → AXI4 bridge (`TLUCToAXI4`)
+
+The TL-UC bridge layers Acquire and Release engines plus the TL-C
+B/C/E channels on top of the TL-UH bridge's read/write/hint/atomic
+engines.  The carry-over engines reuse the same logic that's already
+proven in §1 and §2; the catalog below covers only the **new**
+behaviors.  All formal artifacts live at
+[`verification/formal/tluctoaxi4_props.sv`](../verification/formal/tluctoaxi4_props.sv).
+
+### 8.1 Formal safety assertions (BMC depth 30)
+
+| ID | Property | Engines |
+|----|----------|---------|
+| F-UC-1 | `io_tl_b_valid == 0` always — bridge never issues a Probe | B |
+| F-UC-2 | Every `D = GrantData` carries `source == acq_xact_source` and `param == toT`; engine snapshot has `hasData=1` | Acquire (AcquireBlock) |
+| F-UC-3 | Every `D = Grant` carries `source == acq_xact_source` and `param == toT`; engine snapshot has `hasData=0` | Acquire (AcquirePerm) |
+| F-UC-4 | Every `D = ReleaseAck` carries `source == rel_xact_source` and `size == rel_xact_size` | Release |
+| F-UC-5 | AcquireBlock AR is aligned to beatBytes, `burst=INCR`, `size=log2(beatBytes)`, and `lock=0` (atomic engine is the only one that asserts AxLOCK) | Acquire |
+| — | `D.ReleaseAck` never carries `corrupt` or `denied` (bridge ties to 0) | Release |
+| — | `D.Grant` never carries `corrupt` | Acquire (no-data path) |
+
+**Result:** all pass at BMC depth 30 (`make formal-uc`).
+
+### 8.2 Formal cover goals
+
+| ID | Cover goal | Reached |
+|----|------------|---------|
+| C-UC-1 | AcquireBlock completes (last GrantData beat fires) | step 6 |
+| C-UC-2 | AcquirePerm completes (`Grant` fires, no R-channel traffic) | step 5 |
+| C-UC-3 | Release (no data) completes (`ReleaseAck` with `rel_xact_hasData=0`) | step 6 |
+| C-UC-4 | ReleaseData completes (`ReleaseAck` with `rel_xact_hasData=1`) | step 8 |
+| C-UC-5 | GrantAck completes the Acquire flow (`E.fire` while `acq_pending`) | step 6 |
+
+### 8.3 Formal environment assumptions
+
+| ID | Assumption | Rationale |
+|----|------------|-----------|
+| UC-A0 | `a.valid == 0`, `c.valid == 0`, `e.valid == 0` during reset | Bridge does not accept any TL traffic pre-reset |
+| UC-A1 | `a.opcode ∈ {0..7}` and `a.size ≤ 6` | TL-UC supports the full A-channel opcode envelope |
+| UC-A2 | A-channel bits stable while `valid && !ready` | TL master irrevocability |
+| UC-C1 | `c.opcode ∈ {6, 7}` (Release / ReleaseData only) and `c.size ≤ 6` | ProbeAck/ProbeAckData should never arrive (no probes issued) |
+| UC-C2 | C-channel bits stable while `valid && !ready` | TL master irrevocability |
+| UC-A3 | Single-outstanding per Acquire engine | Bridge's slot is 1-deep |
+| UC-C3 | While `rel_pending` and `c.valid`, source/size/opcode match the snapshot taken at `rel_begin` (data may vary per beat) | Burst-stability: the master continues the in-flight Release transaction, not a fresh one |
+| UC-E1 | `e.bits.sink == 0` | Single Acquire slot uses sink = 0 |
+| UC-X1 | When Acquire and Atomic are both pending, their sources differ | AXI4 spec: outstanding transactions on the same channel must use unique IDs |
+| UC-X2 | When Release and Atomic are both pending, their sources differ | Same as UC-X1 but for AW/B |
+| UC-AT1 | Atomic A.size ≤ 3 (single beat) | Bridge routes oversized atomics to error slot |
+| AXI-B0 / AXI-R0 | B/R channels stable while `valid && !ready` | AXI4 §A3.2.2 |
+
+### 8.4 Scoreboard-level checks (Verilator C++ TB)
+
+Run in `make sim-uc`.  Defined in
+[`test/cpp/tb_uc.cpp`](../test/cpp/tb_uc.cpp).
+
+| ID | Check | Scope |
+|----|-------|-------|
+| UCTB-S1 | Per-source FIFO ordering: D response matches a pending request from that source | Multi-engine concurrency safety |
+| UCTB-S2 | `resp.size == job.req.size` | Size preservation |
+| UCTB-S3 | `resp.denied == job.expectDenied` | AXI error propagation (RRESP/BRESP on Acquire/Release paths too) |
+| UCTB-S4 | `resp.corrupt == job.expectCorrupt` | Corrupt bit on read errors |
+| UCTB-S5 | `resp.opcode == job.expectOpcode` | D-opcode discipline (AccessAck/AckData/HintAck/Grant/GrantData/ReleaseAck routed correctly) |
+| UCTB-S6 | `resp.param == job.expectParam` for Grant/GrantData | Always-grant-T invariant |
+| UCTB-S7 | For Get/AcquireBlock: per-beat data matches reference memory | Functional correctness of data path |
+| UCTB-S8 | Every per-source FIFO empty after run | Completeness |
+| UCTB-S9 | TL-B never fires | Bridge never issues a Probe |
+| UCTB-S10 | GrantAck queue drains (one E.fire per Acquire) | E-channel completion |
+
+### 8.5 Cocotb directed tests (Icarus)
+
+Run in `make cocotb-uc`.  Defined in
+[`cocotb/test_uc.py`](../cocotb/test_uc.py).
+
+| Test | Coverage |
+|------|----------|
+| `test_acquire_block_ntot` | Full cache-line read via AcquireBlock(NtoT), GrantData verified against ref memory, GrantAck sent on E |
+| `test_acquire_block_ntob_grants_t` | AcquireBlock(NtoB) — verifies bridge always returns `toT` |
+| `test_acquire_perm` | AcquirePerm(NtoT) — no AXI traffic, immediate Grant(toT) |
+| `test_release_no_data` | Release(TtoN) → ReleaseAck, no AXI traffic |
+| `test_release_data` | ReleaseData(TtoN) full-line writeback, then verify by re-AcquireBlock |
+| `test_tluh_carryover` | Plain Get/Put/Hint still work through the extended bridge |
+
+### 8.6 Lint
+
+Run in `make lint-uc`.  Verilator `--lint-only -Wall` clean at 0
+warnings with the same `UNUSEDSIGNAL`/`UNUSEDPARAM` suppressions used
+by the TL-UH bridge.
+
+---
+
+## 9. Known gaps
 
 These are tracked in `doc/PLAN.md` under longer horizon; listing here
 so reviewers see the catalog's edges:

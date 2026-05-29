@@ -1,0 +1,34 @@
+# tluctoaxi4.sby — SymbiYosys proof script for TLUCToAXI4
+#
+# Focused on the NEW behaviors introduced by the TL-UC variant (Acquire,
+# Release, GrantAck, B-tied-off).  The carry-over TL-UH engines are
+# already proven in tluhtoaxi4.sby.
+#
+# Tasks:
+#   bmc   — safety: F-UC-1..5 + no-corrupt/denied on ReleaseAck
+#   cover — reachability: C-UC-1..5
+
+[tasks]
+bmc
+cover
+
+[options]
+bmc:   mode bmc
+cover: mode cover
+depth 30
+
+[engines]
+smtbmc
+
+[script]
+read -sv tluctoaxi4_props.sv TLUCToAXI4.sv
+hierarchy -top tluctoaxi4_props
+proc
+opt
+memory_map
+flatten
+opt
+
+[files]
+tluctoaxi4_props.sv
+../../generated/uc/TLUCToAXI4.sv

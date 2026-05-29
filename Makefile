@@ -19,16 +19,25 @@ WIDTH_DIR   := $(GEN_DIR)/widths
 ULITE_DIR := $(GEN_DIR)/ulite
 ULITE_SV  := $(ULITE_DIR)/TLULToAXILite.sv
 
+# TL-UC → AXI4 variant — emitted to $(GEN_DIR)/uc/.  TL-C wire shape
+# (A/B/C/D/E) with no coherence; AXI4 downstream.  Carries TL-UH
+# opcodes + AcquireBlock/AcquirePerm/Release/ReleaseData.
+UC_DIR := $(GEN_DIR)/uc
+UC_SV  := $(UC_DIR)/TLUCToAXI4.sv
+
 SBT       := sbt
 VERILATOR := verilator
 
 TB_SRC      := test/cpp/tb_main.cpp
 ULITE_TB    := test/cpp/tb_ulite.cpp
+UC_TB       := test/cpp/tb_uc.cpp
 BUILD_DIR   := build
 ULITE_BUILD := build_ulite
+UC_BUILD    := build_uc
 COV_DIR     := build_cov
 SIM_EXE     := $(BUILD_DIR)/VTLUHToAXI4
 ULITE_EXE   := $(ULITE_BUILD)/VTLULToAXILite
+UC_EXE      := $(UC_BUILD)/VTLUCToAXI4
 COV_EXE     := $(COV_DIR)/VTLUHToAXI4
 COV_INFO    := coverage.info
 
@@ -81,8 +90,21 @@ ULITE_VERILATOR_FLAGS := \
     -Mdir $(ULITE_BUILD) \
     -CFLAGS "-std=c++17 -O2"
 
-.PHONY: help all elab elab-widths build sim run lint lint-decoder lint-widths lint-ulite \
+UC_VERILATOR_FLAGS := \
+    --cc \
+    --exe \
+    --build \
+    --trace \
+    -Wall \
+    -Wno-fatal \
+    $(LINT_SUPPRESS) \
+    --top-module TLUCToAXI4 \
+    -Mdir $(UC_BUILD) \
+    -CFLAGS "-std=c++17 -O2"
+
+.PHONY: help all elab elab-widths build sim run lint lint-decoder lint-widths lint-ulite lint-uc \
         build-ulite sim-ulite cocotb-ulite formal-ulite regress regress-ulite \
+        build-uc sim-uc cocotb-uc formal-uc regress-uc \
         coverage cov-report formal cocotb wave wave-formal wave-bmc ci clean
 
 # ---- Waveform viewer ----
@@ -111,8 +133,14 @@ help:
 	@echo "  sim-ulite     Build + run the TL-UL -> AXI4-Lite Verilator TB"
 	@echo "  formal-ulite  SymbiYosys BMC + cover for the AXI-Lite bridge"
 	@echo "  cocotb-ulite  cocotb directed tests for the AXI-Lite bridge"
-	@echo "  regress       lint + lint-decoder + lint-widths + lint-ulite + sim + sim-ulite"
+	@echo "  lint-uc       Lint the TL-UC (via TL-C) -> AXI4 bridge variant"
+	@echo "  build-uc      Verilator TB build for the TL-UC bridge (no run)"
+	@echo "  sim-uc        Build + run the TL-UC -> AXI4 Verilator TB"
+	@echo "  formal-uc     SymbiYosys BMC + cover for the TL-UC bridge"
+	@echo "  cocotb-uc     cocotb directed tests for the TL-UC bridge"
+	@echo "  regress       lint + lint-decoder + lint-widths + lint-ulite + lint-uc + sim + sim-ulite + sim-uc"
 	@echo "  regress-ulite lint-ulite + sim-ulite"
+	@echo "  regress-uc    lint-uc + sim-uc"
 	@echo "  coverage      Verilator --coverage build + coverage.info"
 	@echo "  cov-report    Coverage + HTML report via genhtml (lcov)"
 	@echo "  formal        SymbiYosys BMC + cover (verification/formal/)"
@@ -127,7 +155,7 @@ help:
 
 all: sim
 
-elab $(SV) $(DECODER_SV) $(ULITE_SV):
+elab $(SV) $(DECODER_SV) $(ULITE_SV) $(UC_SV):
 	$(SBT) -batch "runMain tlbridge.Main"
 
 elab-widths:
@@ -165,6 +193,11 @@ lint-ulite: $(ULITE_SV)
 	    --top-module TLULToAXILite $(ULITE_SV)
 	@echo "lint-ulite: 0 warnings"
 
+lint-uc: $(UC_SV)
+	$(VERILATOR) --lint-only -Wall $(LINT_SUPPRESS) \
+	    --top-module TLUCToAXI4 $(UC_SV)
+	@echo "lint-uc: 0 warnings"
+
 # ---- TL-UL → AXI4-Lite Verilator TB ----
 build-ulite $(ULITE_EXE): $(ULITE_SV) $(ULITE_TB)
 	$(VERILATOR) $(ULITE_VERILATOR_FLAGS) -o VTLULToAXILite $(ULITE_SV) $(ULITE_TB)
@@ -179,8 +212,23 @@ formal-ulite: $(ULITE_SV)
 cocotb-ulite: $(ULITE_SV)
 	$(MAKE) -C cocotb ulite
 
-regress: lint lint-decoder lint-widths lint-ulite sim sim-ulite
+# ---- TL-UC → AXI4 Verilator TB ----
+build-uc $(UC_EXE): $(UC_SV) $(UC_TB)
+	$(VERILATOR) $(UC_VERILATOR_FLAGS) -o VTLUCToAXI4 $(UC_SV) $(UC_TB)
+
+sim-uc: $(UC_EXE)
+	cd $(UC_BUILD) && ./VTLUCToAXI4
+	-@mv -f $(UC_BUILD)/sim_uc.vcd sim_uc.vcd 2>/dev/null
+
+formal-uc: $(UC_SV)
+	$(MAKE) -C verification/formal uc
+
+cocotb-uc: $(UC_SV)
+	$(MAKE) -C cocotb uc
+
+regress: lint lint-decoder lint-widths lint-ulite lint-uc sim sim-ulite sim-uc
 regress-ulite: lint-ulite sim-ulite
+regress-uc: lint-uc sim-uc
 
 # --------- Waveforms ---------
 # `wave` runs the sim (refreshing sim.vcd if anything changed) and pops up
@@ -234,9 +282,9 @@ formal: $(SV)
 cocotb: $(SV)
 	$(MAKE) -C cocotb
 
-ci: regress coverage formal formal-ulite cocotb cocotb-ulite
+ci: regress coverage formal formal-ulite formal-uc cocotb cocotb-ulite cocotb-uc
 
 clean:
-	rm -rf $(GEN_DIR) $(BUILD_DIR) $(ULITE_BUILD) $(COV_DIR) sim.vcd sim_ulite.vcd $(COV_INFO) coverage_html target project/target project/project
+	rm -rf $(GEN_DIR) $(BUILD_DIR) $(ULITE_BUILD) $(UC_BUILD) $(COV_DIR) sim.vcd sim_ulite.vcd sim_uc.vcd $(COV_INFO) coverage_html target project/target project/project
 	$(MAKE) -C verification/formal clean
-	rm -rf cocotb/sim_build cocotb/sim_build_ulite cocotb/__pycache__ cocotb/results.xml cocotb/*.vcd
+	rm -rf cocotb/sim_build cocotb/sim_build_ulite cocotb/sim_build_uc cocotb/__pycache__ cocotb/results.xml cocotb/*.vcd

@@ -15,6 +15,7 @@ generated/
 # Verilator build outputs
 build/
 build_ulite/
+build_uc/
 build_cov/
 obj_dir/
 
@@ -32,16 +33,20 @@ coverage_html/
 .claude/
 NOTES
 
-# SymbiYosys scratch dirs (one per task in tluhtoaxi4.sby / tlultoaxilite.sby)
+# SymbiYosys scratch dirs (one per task in each .sby)
 verification/formal/tluhtoaxi4_bmc/
 verification/formal/tluhtoaxi4_cover/
 verification/formal/tluhtoaxi4/
 verification/formal/tlultoaxilite_bmc/
 verification/formal/tlultoaxilite_cover/
 verification/formal/tlultoaxilite/
+verification/formal/tluctoaxi4_bmc/
+verification/formal/tluctoaxi4_cover/
+verification/formal/tluctoaxi4/
 
 # cocotb scratch
 cocotb/sim_build/
 cocotb/sim_build_ulite/
+cocotb/sim_build_uc/
 cocotb/__pycache__/
 cocotb/results.xml

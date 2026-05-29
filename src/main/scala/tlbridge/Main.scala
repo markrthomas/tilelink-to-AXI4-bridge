@@ -53,7 +53,17 @@ object Main extends App {
     EmitConfig.firtoolArgs,
   )
 
-  println(s"Wrote SystemVerilog to $outDir/, $decoderOutDir/, and $uliteOutDir/")
+  // TL-UC → AXI4 bridge — TL-C channel shape (A/B/C/D/E) with no
+  // coherence.  Carries TL-UH opcodes plus AcquireBlock/AcquirePerm and
+  // Release/ReleaseData; B (probe) is tied off.
+  val ucOutDir = s"$outDir/uc"
+  ChiselStage.emitSystemVerilogFile(
+    new TLUCToAXI4(BridgeParams()),
+    Array("--target-dir", ucOutDir),
+    EmitConfig.firtoolArgs,
+  )
+
+  println(s"Wrote SystemVerilog to $outDir/, $decoderOutDir/, $uliteOutDir/, and $ucOutDir/")
 }
 
 object WidthSweep extends App {
