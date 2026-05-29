@@ -63,7 +63,19 @@ object Main extends App {
     EmitConfig.firtoolArgs,
   )
 
-  println(s"Wrote SystemVerilog to $outDir/, $decoderOutDir/, $uliteOutDir/, and $ucOutDir/")
+  // TL-C → CHI Issue-E bridge.  Stage 1 skeleton: all five TL-C
+  // channels (A/B/C/D/E) + all four CHI channels (REQ/RSP/DAT/SNP,
+  // split into RN-tx and RN-rx halves) exposed; every output tied to
+  // a safe default; no functional behavior yet.  See doc/CHI_PLAN.md
+  // for the staged roadmap and doc/DESIGN_SPEC_CHI.md for the mapping.
+  val chiOutDir = s"$outDir/chi"
+  ChiselStage.emitSystemVerilogFile(
+    new TLCToCHI(CHIBridgeParams()),
+    Array("--target-dir", chiOutDir),
+    EmitConfig.firtoolArgs,
+  )
+
+  println(s"Wrote SystemVerilog to $outDir/, $decoderOutDir/, $uliteOutDir/, $ucOutDir/, and $chiOutDir/")
 }
 
 object WidthSweep extends App {

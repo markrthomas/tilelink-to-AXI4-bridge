@@ -1,6 +1,6 @@
 # TL-C → CHI Bridge — Staged Implementation Plan
 
-**Status:** planning — not yet started
+**Status:** Stage 1 landed 2026-05-28; Stages 2–7 pending.
 **As of:** 2026-05-28
 **Direction:** TL-C upstream → CHI Issue-E downstream
 **Module name:** `TLCToCHI`
@@ -56,27 +56,33 @@ this time, not AXI4.
 Each stage is an independently shippable milestone.  The Makefile gains
 the `chi` variant slot in Stage 1 and stays green from then on.
 
-### Stage 1 — Protocol mapping doc + skeleton
+### ~~Stage 1 — Protocol mapping doc + skeleton~~ ✓ DONE 2026-05-28
 
-**Deliverables**
-- `doc/DESIGN_SPEC_CHI.md` — full opcode/permission mapping, channel
-  diagrams, FSM sketches, state encodings, the CHI §2 and §B ordering
-  rules applied to the bridge
-- `src/main/scala/tlbridge/CHIBundles.scala` — CHI REQ/RSP/DAT/SNP
-  bundles and opcode constants
-- `src/main/scala/tlbridge/TLCBundles.scala` (or extend `Bundles.scala`)
-  — `TLBChannel`, `TLCChannel`, `TLEChannel`
-- `src/main/scala/tlbridge/TLCToCHI.scala` — module skeleton with all 5
-  TL channels + all 4 CHI channels wired, every output tied to a safe
-  default, zero functional behavior
-- `make lint-chi` clean
-- `Makefile`, `cocotb/Makefile`, `verification/formal/Makefile` extended
-  with the `chi` variant slot
+**Deliverables (all landed)**
+- `doc/DESIGN_SPEC_CHI.md` — full TL↔CHI opcode/permission mapping
+  tables, channel signal tables, transaction-flow diagrams (acquire,
+  release, snoop), CHI ordering rules applied to the bridge, Stage 1
+  limits.
+- `src/main/scala/tlbridge/CHIBundles.scala` — `CHIBridgeParams` + CHI
+  REQ/RSP/DAT/SNP bundles + `CHIOpcode` and `CHIResp` constants
+  (Issue-E values for Stage 2–6 opcodes).
+- TL-C channel bundles (`TLBChannel`, `TLCChannel`, `TLEChannel`,
+  `TLUCSlaveIO`) reused as-is from `Bundles.scala` — these landed
+  with the TL-UC bridge work and didn't need duplication.
+- `src/main/scala/tlbridge/TLCToCHI.scala` — module skeleton with all
+  5 TL channels + all 4 CHI channels wired (txreq/txrsp/txdat +
+  rxrsp/rxdat/rxsnp), every output tied to a safe default, zero
+  functional behavior.
+- `Main.scala` emits to `generated/chi/TLCToCHI.sv`.
+- `Makefile`, `cocotb/Makefile`, `verification/formal/Makefile`
+  extended with the `chi` variant slot.  `make lint-chi` is in
+  `make regress`.
 
-**Exit criteria**
-- Lint-clean elaboration of `TLCToCHI`
-- Mapping doc reviewed
-- No regression in TLUH / ULite paths
+**Exit criteria met**
+- Lint-clean elaboration of `TLCToCHI` — `make lint-chi`: 0 warnings.
+- Mapping doc complete at `doc/DESIGN_SPEC_CHI.md` (10 sections, ~450 lines).
+- No regression: full `make regress` PASS — TLUH 183 jobs, ULite 24
+  jobs, UC 11 jobs, all 0 errors; all 6 lint targets clean.
 
 ### Stage 2 — Read-shared path
 
@@ -290,10 +296,25 @@ doc/
 
 ## 8. Status & next step
 
-The plan is locked but no RTL has been written.  Next step is a separate
-go-ahead from you on:
+**Stage 1 landed 2026-05-28.**  Skeleton + spec + Makefile/lint slot
+all in.  No functional behavior yet.
 
-- The four open questions in §2
-- Whether to start Stage 1 immediately or wait
-- Whether stages 1–7 should also become GitHub issues with acceptance
-  checklists (recommended once Stage 1 starts)
+The four open questions in §2 were settled as follows:
+1. **DCT/DMT:** off for Stage 1; revisit at Stage 5.
+2. **CHI HN model:** hand-roll from the spec (Stage 2 deliverable).
+3. **Multi-line atomics:** confirmed disallowed — bridge will enforce
+   `a.size ≤ log2(lineBytes)` for atomics at elaboration.
+4. **Cache line:** pinned at 64 B for Stage 1.
+
+**Next step is a separate go-ahead** to start Stage 2 (read-shared
+path: AcquireBlock(NtoB) → ReadShared → CompData → GrantData → GrantAck
+→ CompAck).  Budget: 3–4 weeks of focused work.  Will need:
+- The first real Chisel logic in `TLCToCHI.scala` (read engine,
+  CompAck reverse path, txnID allocation table, GrantData beat
+  assembly with `dataID` ordering).
+- A hand-rolled CHI Home Node model in `test/cpp/tb_chi.cpp` plus
+  `cocotb/env_chi.py` (the CHI-side equivalent of the existing AXI
+  slave models).
+- First two formal properties (F-CHI-1 TxnID conservation, F-CHI-2 no
+  spurious GrantData) at `verification/formal/tlctochi_props.sv`.
+- One cocotb test (`test_acquire_ntob`) and 5+ directed C++ jobs.

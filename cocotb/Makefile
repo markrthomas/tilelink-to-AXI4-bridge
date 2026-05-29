@@ -16,6 +16,11 @@ VERILOG_SOURCES = $(PWD)/../generated/uc/TLUCToAXI4.sv
 TOPLEVEL        = TLUCToAXI4
 MODULE          = test_uc
 SIM_BUILD       = sim_build_uc
+else ifeq ($(VARIANT),chi)
+VERILOG_SOURCES = $(PWD)/../generated/chi/TLCToCHI.sv
+TOPLEVEL        = TLCToCHI
+MODULE          = test_chi
+SIM_BUILD       = sim_build_chi
 else
 VERILOG_SOURCES = $(PWD)/../generated/TLUHToAXI4.sv
 TOPLEVEL        = TLUHToAXI4
@@ -23,17 +28,24 @@ MODULE          = test_bridge
 endif
 
 # `make` (no arg) should run the default TL-UH suite via cocotb's Makefile.sim;
-# `make ulite` / `make uc` re-invoke make with the matching VARIANT and an
-# explicit `sim` goal.  Without .DEFAULT_GOAL the variant recipes (declared
-# before the include) would become the default goal and steal `make` invocations.
+# `make ulite` / `make uc` / `make chi` re-invoke make with the matching
+# VARIANT and an explicit `sim` goal.  Without .DEFAULT_GOAL the variant
+# recipes (declared before the include) would become the default goal and
+# steal `make` invocations.
 .DEFAULT_GOAL := sim
 
-.PHONY: ulite uc
+.PHONY: ulite uc chi
 ulite:
 	$(MAKE) VARIANT=ulite sim
 
 uc:
 	$(MAKE) VARIANT=uc sim
+
+# Stage 1 has no cocotb tests yet — the harness is wired but
+# `test_chi.py` is a Stage 2 deliverable.  Running `make chi` here
+# will fail with "module test_chi not found" until then.
+chi:
+	$(MAKE) VARIANT=chi sim
 
 # OSS CAD Suite ships its own Icarus + Python; force the system installs so
 # the GPI module loads the same Python that has cocotb on PYTHONPATH.

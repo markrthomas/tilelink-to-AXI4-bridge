@@ -3,7 +3,8 @@
 TileLink → AXI bridges, written in Chisel and verified with a Verilator
 C++ testbench, SymbiYosys formal proofs, and cocotb.
 
-This repo ships three sibling bridges:
+This repo ships three production bridges plus a fourth in active
+development:
 
 - **TLUHToAXI4** — TileLink-UH (uncached heavyweight) → AXI4 master.
   Handles `Get`, `PutFullData`, `PutPartialData`, `Hint`, `ArithmeticData`,
@@ -16,13 +17,19 @@ This repo ships three sibling bridges:
 - **TLUCToAXI4** — TL-C wire shape (A + B + C + D + E) with no
   coherence → AXI4 master.  Carries the full TL-UH opcode set plus
   `AcquireBlock`, `AcquirePerm`, `Release`, and `ReleaseData`; always
-  grants Tip on Acquire (no other sharers to invalidate); TL-B is tied
-  off because the bridge never issues a Probe.  Intended for single
-  cached masters where coherence is unnecessary, and as the stepping
-  stone for the upcoming TL-C → CHI bridge.
+  grants Tip on Acquire; TL-B is tied off because the bridge never
+  issues a Probe.  Intended for single cached masters where coherence
+  is unnecessary.
+- **TLCToCHI** (in progress — Stage 1 of 7 landed) — TileLink-C →
+  CHI Issue-E master (RN-F role).  Real coherent path: snoops, dirty
+  writebacks, GrantAck flow.  See
+  [`doc/CHI_PLAN.md`](doc/CHI_PLAN.md) for the staged roadmap and
+  [`doc/DESIGN_SPEC_CHI.md`](doc/DESIGN_SPEC_CHI.md) for the protocol
+  mapping.  Stage 1 is the module skeleton + spec; functional
+  behavior lands in Stage 2 onward.
 
-All three present a TL slave port to the host and drive an AXI-family
-master port to a memory-mapped subordinate.
+All four present a TL slave port to the host and drive an AXI-family
+or CHI master port to a memory-mapped subordinate.
 
 ## Directory layout
 

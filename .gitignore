@@ -16,6 +16,7 @@ generated/
 build/
 build_ulite/
 build_uc/
+build_chi/
 build_cov/
 obj_dir/
 
@@ -43,10 +44,14 @@ verification/formal/tlultoaxilite/
 verification/formal/tluctoaxi4_bmc/
 verification/formal/tluctoaxi4_cover/
 verification/formal/tluctoaxi4/
+verification/formal/tlctochi_bmc/
+verification/formal/tlctochi_cover/
+verification/formal/tlctochi/
 
 # cocotb scratch
 cocotb/sim_build/
 cocotb/sim_build_ulite/
 cocotb/sim_build_uc/
+cocotb/sim_build_chi/
 cocotb/__pycache__/
 cocotb/results.xml
