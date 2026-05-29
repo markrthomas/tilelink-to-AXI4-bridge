@@ -235,26 +235,19 @@ burst is never interrupted by a subsequently-arriving B or hint.
 
 - **One outstanding transaction per engine.** Two reads cannot be
   in flight simultaneously, and two writes cannot.  A read + a write
-  + a hint *can*.  Multi-source-per-engine parallelism (e.g. two
+  + a hint + an atomic *can*.  Multi-source-per-engine parallelism (e.g. two
   outstanding reads) would need a per-source ID table.
-- **No atomics.** `ArithmeticData` / `LogicalData` are not implemented as
-  read-modify-write operations. They are consumed by a one-deep local error
-  slot and answered with denied `AccessAck` so an unsupported request does
-  not wedge the TL-A channel. Future work (`doc/PLAN.md` longer horizon)
-  maps these to AXI read-modify-write or exclusive accesses.
+- **Atomics limited to single-beat.** `ArithmeticData` / `LogicalData`
+  are implemented as RMW sequences but restricted to `a.size <= log2(beatBytes)`.
 - **`AxSIZE` tied to bus width.** Sub-bus writes use `WSTRB` to select
   the active bytes. A downstream subordinate that depends on `AxSIZE`
   for narrow-transfer behavior may need a wrapper.
 - **No reordering, no interleaving.** R beats arrive in AR order; W
   beats are issued in A order. The bridge does not buffer beats.
-- **Error mapping.** `RRESP ≠ OKAY` raises `D.denied`; only `SLVERR`/`DECERR`
-  (resp bit 1 set) raises `D.corrupt`. `EXOKAY` does not raise `corrupt`
-  because the data is valid. `BRESP ≠ OKAY` raises `D.denied` only —
-  writes have no data integrity bit. `DECERR` vs. `SLVERR` are not
-  distinguished on the TL side beyond the corrupt/denied split.
-- **No AXI side-band signals.** `AWLOCK`, `AWCACHE`, `AWPROT`, `AWQOS`,
-  `AWREGION` (and the AR equivalents) are not driven. If the
-  subordinate requires them, add tie-zeros at integration.
+- **Error mapping.** `resp[1]` set (`SLVERR`/`DECERR`) raises `D.denied`.
+  On reads, it also raises `D.corrupt`. `EXOKAY` (01) is treated as success.
+- **AXI side-band signals.** `AWPROT`/`ARPROT` tied to 1; `AWLOCK`/`ARLOCK`
+  used for atomics. `AWCACHE`, `AWQOS`, `AWREGION` tied to zero.
 
 ## Verification overview
 
@@ -324,3 +317,14 @@ program order for a shared source.
 
 A dedicated multi-port testbench and formal extension are tracked as
 follow-up in `doc/PLAN.md`.
+or reorder.  A well-behaved master either uses a fresh source per
+outstanding transaction (the usual convention) or accepts that
+differently-paced subordinates may return D in an order that drifts from
+program order for a shared source.
+
+**Burst constraint.** A burst must lie entirely within one
+`DecodeRegion`.  Region-crossing bursts are undefined.
+
+A dedicated multi-port testbench and formal extension are tracked as
+follow-up in `doc/PLAN.md`.
+ in `doc/PLAN.md`.

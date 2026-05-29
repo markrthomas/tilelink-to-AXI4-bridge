@@ -279,7 +279,7 @@ class TLULToAXILite(val p: ULBridgeParams = ULBridgeParams()) extends Module {
       io.tl.d.bits.opcode  := TLOpcode.AccessAck
       io.tl.d.bits.size    := wSize
       io.tl.d.bits.source  := wSource
-      io.tl.d.bits.denied  := (io.axi.b.bits.resp =/= 0.U)
+      io.tl.d.bits.denied  := io.axi.b.bits.resp(1)
       when(io.tl.d.fire) { wState := sWIdle }
     }
     is(dSelR) {
@@ -288,7 +288,7 @@ class TLULToAXILite(val p: ULBridgeParams = ULBridgeParams()) extends Module {
       io.tl.d.bits.opcode  := TLOpcode.AccessAckData
       io.tl.d.bits.size    := rSize
       io.tl.d.bits.source  := rSource
-      io.tl.d.bits.denied  := (io.axi.r.bits.resp =/= 0.U)
+      io.tl.d.bits.denied  := io.axi.r.bits.resp(1)
       io.tl.d.bits.corrupt := io.axi.r.bits.resp(1)
       io.tl.d.bits.data    := io.axi.r.bits.data
       when(io.tl.d.fire) { rState := sRIdle }

@@ -207,6 +207,7 @@ class TLUCToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   val relSize    = RegInit(0.U(p.sizeBits.W))
   val relAddr    = RegInit(0.U(p.addrBits.W))
   val relBeats   = RegInit(0.U((p.sizeBits + 1).W))
+  val relRespErr = RegInit(false.B)
 
   val relCanAcceptC = (relState === sRelIdle)
   val relPeekData   = (relState === sRelIdle)       // peek-don't-fire for ReleaseData
@@ -312,6 +313,7 @@ class TLUCToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
     relSource := io.tl.c.bits.source
     relSize   := io.tl.c.bits.size
     relAddr   := io.tl.c.bits.address
+    relRespErr := false.B
     when(isReleaseData) {
       relBeats := cBeats
       relState := sRelAW           // peek-don't-fire: we did NOT consume C beat 0
@@ -560,7 +562,7 @@ class TLUCToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
       io.tl.d.bits.size    := wSize
       io.tl.d.bits.source  := wSource
       io.tl.d.bits.sink    := 0.U
-      io.tl.d.bits.denied  := (io.axi.b.bits.resp =/= 0.U)
+      io.tl.d.bits.denied  := io.axi.b.bits.resp(1)
       io.tl.d.bits.corrupt := false.B
       io.tl.d.bits.data    := 0.U
       when(io.tl.d.fire) { wState := sWIdle }
@@ -573,7 +575,7 @@ class TLUCToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
       io.tl.d.bits.size    := rSize
       io.tl.d.bits.source  := rSource
       io.tl.d.bits.sink    := 0.U
-      io.tl.d.bits.denied  := (io.axi.r.bits.resp =/= 0.U)
+      io.tl.d.bits.denied  := io.axi.r.bits.resp(1)
       io.tl.d.bits.corrupt := io.axi.r.bits.resp(1)
       io.tl.d.bits.data    := io.axi.r.bits.data
       when(io.axi.r.fire) {
@@ -591,7 +593,7 @@ class TLUCToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
         io.tl.d.bits.size    := acqSize
         io.tl.d.bits.source  := acqSource
         io.tl.d.bits.sink    := ACQ_SINK
-        io.tl.d.bits.denied  := (io.axi.r.bits.resp =/= 0.U)
+        io.tl.d.bits.denied  := io.axi.r.bits.resp(1)
         io.tl.d.bits.corrupt := io.axi.r.bits.resp(1)
         io.tl.d.bits.data    := io.axi.r.bits.data
         when(io.axi.r.fire) {
@@ -619,7 +621,7 @@ class TLUCToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
       io.tl.d.bits.size    := relSize
       io.tl.d.bits.source  := relSource
       io.tl.d.bits.sink    := 0.U
-      io.tl.d.bits.denied  := false.B
+      io.tl.d.bits.denied  := relRespErr
       io.tl.d.bits.corrupt := false.B
       io.tl.d.bits.data    := 0.U
       when(io.tl.d.fire) { relState := sRelIdle }
@@ -674,6 +676,7 @@ class TLUCToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
   when(relState === sRelBresp && relBValid) {
     io.axi.b.ready := true.B
     when(io.axi.b.fire) {
+      when(io.axi.b.bits.resp(1)) { relRespErr := true.B }
       relState := sRelAck
     }
   }

@@ -406,7 +406,7 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
       io.tl.d.bits.size    := wSize
       io.tl.d.bits.source  := wSource
       io.tl.d.bits.sink    := 0.U
-      io.tl.d.bits.denied  := (io.axi.b.bits.resp =/= 0.U)
+      io.tl.d.bits.denied  := io.axi.b.bits.resp(1)
       io.tl.d.bits.corrupt := false.B
       io.tl.d.bits.data    := 0.U
       when(io.tl.d.fire) { wState := sWIdle }
@@ -423,7 +423,7 @@ class TLUHToAXI4(val p: BridgeParams = BridgeParams()) extends Module {
       io.tl.d.bits.source  := rSource
       io.tl.d.bits.sink    := 0.U
       // RRESP bit 1 distinguishes SLVERR=10 / DECERR=11 from OKAY/EXOKAY.
-      io.tl.d.bits.denied  := (io.axi.r.bits.resp =/= 0.U)
+      io.tl.d.bits.denied  := io.axi.r.bits.resp(1)
       io.tl.d.bits.corrupt := io.axi.r.bits.resp(1)
       io.tl.d.bits.data    := io.axi.r.bits.data
       when(io.axi.r.fire) {

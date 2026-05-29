@@ -106,7 +106,7 @@ class TLUHToAXI4Decoder(val p: BridgeParams, val regions: Seq[DecodeRegion]) ext
 
   val dSel = Mux(locked, lockedBridge, firstValid)
 
-  io.tl.d.valid := anyValid
+  io.tl.d.valid := dValids(dSel)
   io.tl.d.bits  := dBitsVec(dSel)
   for (i <- 0 until n) {
     bridges(i).io.tl.d.ready := io.tl.d.ready && (dSel === i.U)
