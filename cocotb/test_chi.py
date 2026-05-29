@@ -2,7 +2,11 @@ import cocotb
 from cocotb.clock import Clock
 from env_chi import (reset_dut, CHIHN, TLMasterCHI,
                      TL_OP_AcqBlock, TL_OP_AcqPerm,
-                     TL_OP_Release, TL_OP_ReleaseData)
+                     TL_OP_Release, TL_OP_ReleaseData,
+                     TL_OP_ProbeAck, TL_OP_ProbeAckData,
+                     SNP_SnpShared, SNP_SnpUnique,
+                     RSP_SnpResp, DAT_SnpRespData,
+                     CHI_I, CHI_SC)
 
 
 @cocotb.test()
@@ -69,3 +73,44 @@ async def test_release_mixed(dut):
     assert hn.released_data[0x88] == wc, "WriteClean data mismatch"
 
     dut._log.info("test_release_mixed passed")
+
+
+@cocotb.test()
+async def test_snoop_mixed(dut):
+    """Sequence of SnpShared / SnpUnique with ProbeAck and ProbeAckData."""
+    cocotb.start_soon(Clock(dut.clock, 10, units="ns").start())
+    await reset_dut(dut)
+
+    hn = CHIHN(dut)
+    master = TLMasterCHI(dut)
+    cocotb.start_soon(hn.run())
+
+    # 1. SnpShared + ProbeAck(TtoB) -> SnpResp(SC)
+    cocotb.start_soon(master.serve_probe(TL_OP_ProbeAck, 0))  # TtoB
+    r = await hn.inject_snoop(SNP_SnpShared, 0x10, 1, 0x9000)
+    assert r["opcode"] == RSP_SnpResp, f"expected SnpResp got {r['opcode']:#x}"
+    assert r["resp"] == CHI_SC, f"expected SC got {r['resp']:#x}"
+
+    # 2. SnpUnique + ProbeAck(TtoN) -> SnpResp(I)
+    cocotb.start_soon(master.serve_probe(TL_OP_ProbeAck, 1))  # TtoN
+    r = await hn.inject_snoop(SNP_SnpUnique, 0x11, 1, 0xA000)
+    assert r["opcode"] == RSP_SnpResp
+    assert r["resp"] == CHI_I
+
+    # 3. SnpShared + ProbeAckData(TtoB) -> SnpRespData(SC_PD=0x5)
+    snp_data = [0xBADC0FFEE0000000 | i for i in range(8)]
+    cocotb.start_soon(master.serve_probe(TL_OP_ProbeAckData, 0, snp_data))
+    r = await hn.inject_snoop(SNP_SnpShared, 0x12, 1, 0xB000)
+    assert r["opcode"] == DAT_SnpRespData
+    assert r["resp"] == 0x5
+    assert r["data"] == snp_data
+
+    # 4. SnpUnique + ProbeAckData(TtoN) -> SnpRespData(I_PD=0x4)
+    snp_data2 = [0xC0FFEE0000000000 | i for i in range(8)]
+    cocotb.start_soon(master.serve_probe(TL_OP_ProbeAckData, 1, snp_data2))
+    r = await hn.inject_snoop(SNP_SnpUnique, 0x13, 1, 0xC000)
+    assert r["opcode"] == DAT_SnpRespData
+    assert r["resp"] == 0x4
+    assert r["data"] == snp_data2
+
+    dut._log.info("test_snoop_mixed passed")

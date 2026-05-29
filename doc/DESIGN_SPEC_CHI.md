@@ -124,7 +124,7 @@ de-allocating its tracker.
 | `SnpShared` (0x01) | `Probe` | `toB` (1) | Stage 5 — demote to shared |
 | `SnpNotSharedDirty` (0x04) | `Probe` | `toB` | Stage 5 — host may keep shared but must report dirty |
 | `SnpClean` (0x02) | `Probe` | `toB` | Stage 5 — clean any dirty data, keep shared |
-| `SnpOnce` (0x03) | `Probe` | `toT` (0) | Stage 5 — no demotion, return data only |
+| `SnpOnce` (0x03) | `Probe` | `toB` (1) | Stage 5 — as-built issues a conservative `toB` probe (over-demotes; the ideal no-demotion `toT` mapping is a follow-up).  Not in the verified opcode set yet. |
 | `SnpUnique` (0x07) | `Probe` | `toN` (2) | Stage 5 — invalidate |
 | `SnpCleanInvalid` (0x09) | `Probe` | `toN` | Stage 5 — invalidate after clean |
 | `SnpMakeInvalid` (0x0A) | `Probe` | `toN` | Stage 5 — invalidate, no data |
@@ -368,11 +368,18 @@ TL master                Bridge                  CHI HN
    |                       |---------------------->|
 ```
 
-The Probe ↔ Release race is the canonical TL-C deadlock pit: if the
-host issues a `Release` for the same line just before the bridge
-dispatches a `Probe`, the bridge must collapse — drop the Probe and
-answer the snoop with the released state.  Stage 5 has a dedicated
-formal property (`F-CHI-8`) for this.
+The Probe ↔ Release race is the canonical TL-C deadlock pit: the host
+may issue a `Release` for the same line just before the bridge
+dispatches a `Probe`.  **As built (Stage 5), the bridge does not
+collapse this race.**  The snoop and release engines stay fully
+independent: the TL master is expected to answer the Probe even though
+it just issued the Release, and both transactions complete on their own.
+`F-CHI-8` proves the two engines never corrupt each other on the shared
+`txrsp`/`txdat` channels (each beat is sourced by exactly one engine),
+and the cover goals show the both-in-flight window is reachable.  True
+*collapse* (drop the Probe, answer the snoop from the released state)
+plus the CHI §B2 ExpCompAck hazard interplay is deferred — see the
+Stage 5 limit in `doc/CHI_PLAN.md` and the `TLCToCHI.scala` header.
 
 ## 7. Ordering rules (CHI §B applied)
 
@@ -381,8 +388,9 @@ Per the Stage 1 baseline:
 - `allowRetry = 1` on all REQs.  Bridge handles `RetryAck` by waiting
   for a matching `PCrdGrant` and re-issuing.
 - `expCompAck = 1` on read REQs — HN keeps the tracker until CompAck.
-- Snoops are unordered with respect to ongoing reads/writes; the
-  bridge resolves Probe ↔ Release races locally.
+- Snoops are unordered with respect to ongoing reads/writes.  The
+  bridge does **not** collapse Probe ↔ Release races (Stage 5 limit);
+  the snoop and release engines complete independently — see §6.4.
 - For writeback flows, the bridge sends `CopyBackWrData` only after
   receiving `CompDBIDResp` / `DBIDResp` to allocate the `dbID`.
 
@@ -390,15 +398,23 @@ Per the Stage 1 baseline:
 
 | Stage | Scope | Status |
 |-------|-------|--------|
-| 1 | Mapping doc + skeleton + Makefile/lint slot | **in progress** — this commit lands the doc, bundles, skeleton, Makefile/cocotb/formal scaffolding, `make lint-chi` clean |
-| 2 | AcquireBlock(NtoB) → ReadShared → CompData → GrantData → GrantAck → CompAck | not started |
-| 3 | AcquireBlock(NtoT/BtoT) → ReadUnique / MakeUnique; AcquirePerm | not started |
-| 4 | Release / ReleaseData → WriteBack* / WriteClean* / Evict | not started |
-| 5 | SnpShared / SnpUnique → Probe → ProbeAck(Data) → SnpResp(Data); Probe ↔ Release race | not started |
+| 1 | Mapping doc + skeleton + Makefile/lint slot | **✓ DONE 2026-05-28** |
+| 2 | AcquireBlock(NtoB) → ReadShared → CompData → GrantData → GrantAck → CompAck | **✓ DONE 2026-05-29** |
+| 3 | AcquireBlock(NtoT/BtoT) → ReadUnique / MakeUnique; AcquirePerm | **✓ DONE 2026-05-29** |
+| 4 | Release / ReleaseData → WriteBack* / WriteClean* / Evict | **✓ DONE 2026-05-29** |
+| 5 | SnpShared / SnpUnique → Probe → ProbeAck(Data) → SnpResp(Data) (probe ↔ release race *not* collapsed — see §6.4) | **✓ DONE 2026-05-29** |
 | 6 | Atomic ops, CMO, prefetch | not started |
 | 7 | Randomized sweep + BMC@30 + 90%+ coverage + CI parity | not started |
 
+See [`doc/CHI_PLAN.md`](CHI_PLAN.md) for the per-stage deliverables and
+exit criteria.
+
 ## 9. Limitations (Stage 1)
+
+> **Historical:** this section describes the original Stage 1 skeleton.
+> Stages 2–5 have since landed (see §8), so all of the tie-offs below are
+> now driven functionally for the read, release, and snoop paths.  Kept
+> as the record of the interface-locking milestone.
 
 The skeleton has all channels wired but no functional behavior:
 - `io_tl_a_ready` = 0 (no TL-A requests accepted)

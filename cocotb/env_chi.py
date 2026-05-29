@@ -9,25 +9,32 @@ REQ_Evict          = 0x0D
 REQ_WriteCleanFull = 0x19
 REQ_WriteBackFull  = 0x1D
 
+RSP_SnpResp        = 0x01
 RSP_CompAck        = 0x02
 RSP_Comp           = 0x04
 RSP_CompDBIDResp   = 0x05
 
+DAT_SnpRespData    = 0x01
 DAT_CopyBackWrData = 0x02
 DAT_CompData       = 0x04
+
+SNP_SnpShared      = 0x01
+SNP_SnpUnique      = 0x07
 
 CHI_I  = 0x0
 CHI_SC = 0x1
 CHI_UC = 0x2
 
 # TL opcodes
-TL_OP_AcqBlock    = 6
-TL_OP_AcqPerm     = 7
-TL_OP_Release     = 6
-TL_OP_ReleaseData = 7
-TL_D_Grant        = 4
-TL_D_GrantData    = 5
-TL_D_ReleaseAck   = 6
+TL_OP_AcqBlock      = 6
+TL_OP_AcqPerm       = 7
+TL_OP_ProbeAck      = 4
+TL_OP_ProbeAckData  = 5
+TL_OP_Release       = 6
+TL_OP_ReleaseData   = 7
+TL_D_Grant          = 4
+TL_D_GrantData      = 5
+TL_D_ReleaseAck     = 6
 
 
 async def reset_dut(dut, cycles: int = 8):
@@ -68,9 +75,7 @@ async def reset_dut(dut, cycles: int = 8):
 
 
 class CHIHN:
-    """CHI Home Node model: ReadShared/Unique → CompData, MakeUnique →
-    Comp(UC), Evict → Comp(I), WriteBackFull/WriteCleanFull →
-    CompDBIDResp(I) then consume CopyBackWrData beats."""
+    """CHI Home Node model covering acquire/release/snoop paths."""
     def __init__(self, dut):
         self.dut = dut
         self.dut.io_chi_txreq_ready.value = 1
@@ -80,6 +85,7 @@ class CHIHN:
         self.dut.io_chi_rxrsp_valid.value = 0
         self.dut.io_chi_rxsnp_valid.value = 0
         self.released_data = {}  # txnID -> list[int]
+        self.snp_results = {}    # txnID -> {"opcode", "resp", "data", "complete"}
         self.next_dbid = 1
 
     async def _send_rxdat(self, tid, beat, total_beats, data, resp):
@@ -144,13 +150,87 @@ class CHIHN:
                 await self._send_rxrsp(tid, RSP_CompDBIDResp, CHI_I, dbid)
                 self.released_data[tid] = await self._collect_txdat(dbid, 8)
 
+    async def inject_snoop(self, opcode, tid, src_id, addr):
+        """Drive an rxsnp transaction and collect the corresponding SnpResp
+        or SnpRespData.  Returns the result dict once complete."""
+        self.snp_results[tid] = {"opcode": 0, "resp": 0,
+                                  "data": [], "complete": False}
+        # Drive rxsnp
+        self.dut.io_chi_rxsnp_valid.value = 1
+        self.dut.io_chi_rxsnp_bits_opcode.value = opcode
+        self.dut.io_chi_rxsnp_bits_txnID.value = tid
+        self.dut.io_chi_rxsnp_bits_srcID.value = src_id
+        self.dut.io_chi_rxsnp_bits_addr.value = addr >> 3
+        while True:
+            await RisingEdge(self.dut.clock)
+            if int(self.dut.io_chi_rxsnp_ready.value) == 1:
+                break
+        self.dut.io_chi_rxsnp_valid.value = 0
+
+        # Collect SnpResp on txrsp OR SnpRespData on txdat
+        result = self.snp_results[tid]
+        while not result["complete"]:
+            await RisingEdge(self.dut.clock)
+            if int(self.dut.io_chi_txrsp_valid.value) == 1 \
+                    and int(self.dut.io_chi_txrsp_ready.value) == 1:
+                rsp_tid = int(self.dut.io_chi_txrsp_bits_txnID.value)
+                rsp_op  = int(self.dut.io_chi_txrsp_bits_opcode.value)
+                if rsp_op == RSP_SnpResp and rsp_tid == tid:
+                    result["opcode"] = RSP_SnpResp
+                    result["resp"]   = int(self.dut.io_chi_txrsp_bits_resp.value)
+                    result["complete"] = True
+            if int(self.dut.io_chi_txdat_valid.value) == 1 \
+                    and int(self.dut.io_chi_txdat_ready.value) == 1:
+                dat_tid = int(self.dut.io_chi_txdat_bits_txnID.value)
+                dat_op  = int(self.dut.io_chi_txdat_bits_opcode.value)
+                if dat_op == DAT_SnpRespData and dat_tid == tid:
+                    result["opcode"] = DAT_SnpRespData
+                    result["resp"]   = int(self.dut.io_chi_txdat_bits_resp.value)
+                    result["data"].append(int(self.dut.io_chi_txdat_bits_data.value))
+                    if len(result["data"]) == 8:
+                        result["complete"] = True
+        return result
+
 
 class TLMasterCHI:
-    """Drives TL-C A/C/E and consumes D."""
+    """Drives TL-C A/C/E and consumes D and B."""
     def __init__(self, dut):
         self.dut = dut
         self.dut.io_tl_d_ready.value = 1
+        self.dut.io_tl_b_ready.value = 1
         self.dut.io_tl_e_valid.value = 0
+        self.dut.io_tl_c_valid.value = 0
+
+    async def serve_probe(self, ack_opcode, ack_param, data=None):
+        """Wait for a Probe on TL-B, then drive a single TL-C
+        ProbeAck/ProbeAckData response back."""
+        data = data or []
+        # Wait for Probe
+        while True:
+            await RisingEdge(self.dut.clock)
+            if int(self.dut.io_tl_b_valid.value) == 1 \
+                    and int(self.dut.io_tl_b_ready.value) == 1:
+                addr = int(self.dut.io_tl_b_bits_address.value)
+                break
+
+        # Drive C with response
+        self.dut.io_tl_c_valid.value = 1
+        self.dut.io_tl_c_bits_opcode.value = ack_opcode
+        self.dut.io_tl_c_bits_param.value = ack_param
+        self.dut.io_tl_c_bits_size.value = 6
+        self.dut.io_tl_c_bits_source.value = 0
+        self.dut.io_tl_c_bits_address.value = addr
+        beats = max(len(data), 1)
+        self.dut.io_tl_c_bits_data.value = (data[0] if data else 0)
+
+        beat_idx = 0
+        while beat_idx < beats:
+            await RisingEdge(self.dut.clock)
+            if int(self.dut.io_tl_c_ready.value) == 1:
+                beat_idx += 1
+                if beat_idx < beats:
+                    self.dut.io_tl_c_bits_data.value = data[beat_idx]
+        self.dut.io_tl_c_valid.value = 0
 
     async def acquire(self, opcode, param, address, source, size=6):
         self.dut.io_tl_a_valid.value = 1

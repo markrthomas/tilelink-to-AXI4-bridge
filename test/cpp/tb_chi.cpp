@@ -1,7 +1,8 @@
-// TLCToCHI Stage 4 Verilator testbench
-//   - Drives TileLink-C (A + C + E) on the bridge slave port
-//   - Models a CHI Home Node (HN) for ReadShared/ReadUnique/MakeUnique
-//     (acquire path) and Evict/WriteBackFull/WriteCleanFull (release).
+// TLCToCHI Stage 5 Verilator testbench
+//   - Drives TileLink-C (A + C + E) and sinks TL-B (Probe).
+//   - Models a CHI Home Node (HN) for the full acquire / release / snoop
+//     surface: ReadShared, ReadUnique, MakeUnique, Evict, WriteBackFull,
+//     WriteCleanFull, SnpShared, SnpUnique.
 //
 // Default DUT params: addrBits=48, dataBits=64, sourceBits=4, txnIDBits=8
 
@@ -39,8 +40,12 @@ static constexpr int RSP_Comp           = 0x04;
 static constexpr int RSP_CompDBIDResp   = 0x05;
 static constexpr int RSP_DBIDResp       = 0x06;
 // CHI DAT opcodes
+static constexpr int DAT_SnpRespData    = 0x01;
 static constexpr int DAT_CopyBackWrData = 0x02;
 static constexpr int DAT_CompData       = 0x04;
+// CHI SNP opcodes
+static constexpr int SNP_SnpShared      = 0x01;
+static constexpr int SNP_SnpUnique      = 0x07;
 // CHI Cache States
 static constexpr int CHI_I              = 0x0;
 static constexpr int CHI_SC             = 0x1;
@@ -49,19 +54,25 @@ static constexpr int CHI_UC             = 0x2;
 // TL A opcodes
 static constexpr int OP_AcqBlock    = 6;
 static constexpr int OP_AcqPerm     = 7;
+// TL B opcodes
+static constexpr int OP_Probe       = 6;
 // TL C opcodes
-static constexpr int OP_Release     = 6;
-static constexpr int OP_ReleaseData = 7;
+static constexpr int OP_ProbeAck     = 4;
+static constexpr int OP_ProbeAckData = 5;
+static constexpr int OP_Release      = 6;
+static constexpr int OP_ReleaseData  = 7;
 // TL D opcodes
 static constexpr int D_GrantData     = 5;
 static constexpr int D_Grant         = 4;
 static constexpr int D_ReleaseAck    = 6;
 // TL A params (acquire)
 static constexpr int P_NtoB = 0, P_NtoT = 1, P_BtoT = 2;
-// TL C params (release)
+// TL C params (release / probeack)
 static constexpr int P_TtoB = 0, P_TtoN = 1, P_BtoN = 2;
 // TL D params (grant)
 static constexpr int P_toT  = 0, P_toB  = 1;
+// TL B params (probe)
+static constexpr int B_toT = 0, B_toB = 1, B_toN = 2;
 
 static vluint64_t main_time = 0;
 double sc_time_stamp() { return (double)main_time; }
@@ -105,8 +116,10 @@ class TLMaster {
 public:
     std::deque<TLAReq> aQ;
     std::deque<TLCReq> cQ;
+    std::deque<TLCReq> probeRsp;  // pre-loaded responses to incoming Probes
     std::deque<TLResp> doneResps;
     std::deque<int>    pendingE;
+    int                probesSeen = 0;
 
     bool aActive = false;
     TLAReq aCur;
@@ -157,6 +170,9 @@ public:
             dut->io_tl_c_valid = 0;
         }
 
+        // ---- B (sink Probes) ----
+        dut->io_tl_b_ready = 1;
+
         // ---- E ----
         dut->io_tl_e_valid = pendingE.empty() ? 0 : 1;
         dut->io_tl_d_ready = 1;
@@ -167,6 +183,22 @@ public:
             std::printf("  A.fire: op=%d param=%d source=%d time=%ld\n",
                         aCur.opcode, aCur.param, aCur.source, main_time);
             aActive = false;
+        }
+        // Probe.fire on TL-B: pull a pre-loaded response off probeRsp and
+        // enqueue it for C.  The response includes opcode (ProbeAck or
+        // ProbeAckData), param, and (optionally) data.
+        if (dut->io_tl_b_valid && dut->io_tl_b_ready) {
+            int b_op    = dut->io_tl_b_bits_opcode;
+            int b_param = dut->io_tl_b_bits_param;
+            uint64_t b_addr = dut->io_tl_b_bits_address;
+            std::printf("  B.fire (Probe): op=%d param=%d addr=0x%lx time=%ld\n",
+                        b_op, b_param, b_addr, main_time);
+            probesSeen++;
+            if (!probeRsp.empty()) {
+                TLCReq rsp = probeRsp.front(); probeRsp.pop_front();
+                rsp.address = b_addr;
+                cQ.push_back(rsp);
+            }
         }
         if (cActive && dut->io_tl_c_valid && dut->io_tl_c_ready) {
             cBeatIdx++;
@@ -230,13 +262,31 @@ struct CHIRelTxn {
     std::vector<uint64_t> dataReceived;
 };
 
+struct CHISnpInject {
+    int opcode;
+    int txnID;
+    int srcID;
+    uint64_t addr;   // full byte address (HN will line-align)
+};
+
+struct CHISnpResult {
+    int txnID;
+    int respOpcode;  // SnpResp (RSP=1) or SnpRespData (DAT=1)
+    int respCode;    // resp[2:0]
+    bool dataSeen;
+    bool complete;
+    std::vector<uint64_t> data;
+};
+
 class CHIHN {
 public:
     std::map<int, CHIReadTxn> activeReads;
     std::map<int, CHIRelTxn>  activeReleases;
+    std::map<int, CHISnpResult> snpResults;
     std::deque<int>           dataQueue;    // for CompData (read path)
     std::deque<int>           rxrspQueue;   // for Comp (acquire-perm path)
     std::deque<int>           rxrspRelQueue; // for CompDBIDResp / Comp (release path)
+    std::deque<CHISnpInject>  snpInjectQueue; // pending snoops to drive on rxsnp
     int nextDBID = 1;
 
     void drive(VTLCToCHI* dut) {
@@ -285,7 +335,17 @@ public:
             dut->io_chi_rxrsp_valid = 0;
         }
 
-        dut->io_chi_rxsnp_valid = 0;
+        // rxsnp injection
+        if (!snpInjectQueue.empty()) {
+            CHISnpInject &snp = snpInjectQueue.front();
+            dut->io_chi_rxsnp_valid = 1;
+            dut->io_chi_rxsnp_bits_opcode = snp.opcode;
+            dut->io_chi_rxsnp_bits_txnID  = snp.txnID;
+            dut->io_chi_rxsnp_bits_srcID  = snp.srcID;
+            dut->io_chi_rxsnp_bits_addr   = snp.addr >> 3; // line-aligned
+        } else {
+            dut->io_chi_rxsnp_valid = 0;
+        }
     }
 
     void sample(VTLCToCHI* dut) {
@@ -344,33 +404,73 @@ public:
             }
         }
 
-        // txrsp.fire — CompAck for acquire
-        if (dut->io_chi_txrsp_valid && dut->io_chi_txrsp_ready) {
-            CHECK(dut->io_chi_txrsp_bits_opcode == RSP_CompAck, "Expected CompAck");
-            std::printf("  CompAck.fire: tid=0x%02x time=%ld\n",
-                        (int)dut->io_chi_txrsp_bits_txnID, main_time);
-            activeReads.erase(dut->io_chi_txrsp_bits_txnID);
+        // rxsnp.fire — pop the injected snoop and seed the result slot
+        if (dut->io_chi_rxsnp_valid && dut->io_chi_rxsnp_ready) {
+            CHISnpInject snp = snpInjectQueue.front();
+            snpInjectQueue.pop_front();
+            std::printf("  SNP.fire: op=0x%02x tid=0x%02x src=%d time=%ld\n",
+                        snp.opcode, snp.txnID, snp.srcID, main_time);
+            CHISnpResult r{}; r.txnID = snp.txnID;
+            snpResults[snp.txnID] = r;
         }
 
-        // txdat.fire — CopyBackWrData beats for release
-        if (dut->io_chi_txdat_valid && dut->io_chi_txdat_ready) {
-            int dbid = dut->io_chi_txdat_bits_txnID;
-            uint64_t d = dut->io_chi_txdat_bits_data;
-            std::printf("  TXDAT.fire: dbid=0x%02x data=0x%016lx time=%ld\n",
-                        dbid, d, main_time);
-            // Find the release matching this dbID
-            for (auto &kv : activeReleases) {
-                if (kv.second.dbID == dbid && kv.second.dbidSent) {
-                    kv.second.beatsSeen++;
-                    kv.second.dataReceived.push_back(d);
-                    if (kv.second.beatsSeen == kv.second.beatsExpected) {
-                        // transaction done
-                        std::printf("  Release tid=0x%02x complete (%d beats)\n",
-                                    kv.first, kv.second.beatsSeen);
-                        activeReleases.erase(kv.first);
-                    }
-                    break;
+        // txrsp.fire — CompAck for acquire OR SnpResp for snoop
+        if (dut->io_chi_txrsp_valid && dut->io_chi_txrsp_ready) {
+            int op  = dut->io_chi_txrsp_bits_opcode;
+            int tid = dut->io_chi_txrsp_bits_txnID;
+            if (op == RSP_CompAck) {
+                std::printf("  CompAck.fire: tid=0x%02x time=%ld\n", tid, main_time);
+                activeReads.erase(tid);
+            } else if (op == RSP_SnpResp) {
+                int rc = dut->io_chi_txrsp_bits_resp;
+                std::printf("  SnpResp.fire: tid=0x%02x resp=0x%x time=%ld\n",
+                            tid, rc, main_time);
+                auto it = snpResults.find(tid);
+                if (it != snpResults.end()) {
+                    it->second.respOpcode = RSP_SnpResp;
+                    it->second.respCode = rc;
+                    it->second.dataSeen = false;
+                    it->second.complete = true;
                 }
+            } else {
+                CHECK(false, "Unexpected txrsp opcode 0x%x", op);
+            }
+        }
+
+        // txdat.fire — CopyBackWrData (release) or SnpRespData (snoop)
+        if (dut->io_chi_txdat_valid && dut->io_chi_txdat_ready) {
+            int op    = dut->io_chi_txdat_bits_opcode;
+            int dbid  = dut->io_chi_txdat_bits_txnID;
+            int rc    = dut->io_chi_txdat_bits_resp;
+            uint64_t d = dut->io_chi_txdat_bits_data;
+            std::printf("  TXDAT.fire: op=0x%x tid=0x%02x data=0x%016lx resp=0x%x time=%ld\n",
+                        op, dbid, d, rc, main_time);
+            if (op == DAT_CopyBackWrData) {
+                for (auto &kv : activeReleases) {
+                    if (kv.second.dbID == dbid && kv.second.dbidSent) {
+                        kv.second.beatsSeen++;
+                        kv.second.dataReceived.push_back(d);
+                        if (kv.second.beatsSeen == kv.second.beatsExpected) {
+                            std::printf("  Release tid=0x%02x complete (%d beats)\n",
+                                        kv.first, kv.second.beatsSeen);
+                            activeReleases.erase(kv.first);
+                        }
+                        break;
+                    }
+                }
+            } else if (op == DAT_SnpRespData) {
+                auto it = snpResults.find(dbid);
+                if (it != snpResults.end()) {
+                    it->second.respOpcode = DAT_SnpRespData; // logical "DAT"
+                    it->second.respCode = rc;
+                    it->second.dataSeen = true;
+                    it->second.data.push_back(d);
+                    if ((int)it->second.data.size() == BEATS_PER_LINE) {
+                        it->second.complete = true;
+                    }
+                }
+            } else {
+                CHECK(false, "Unexpected txdat opcode 0x%x", op);
             }
         }
     }
@@ -483,8 +583,81 @@ int main(int argc, char** argv) {
     for (int i = 0; i < BEATS_PER_LINE; i++) wc_data.push_back(0xFEEDF00D00000000ULL | i);
     run_release(OP_ReleaseData, P_TtoB, 8, wc_data, REQ_WriteCleanFull);
 
+    // Stage 5 snoops
+    auto run_snoop = [&](int snp_op, int txnID, int srcID, uint64_t addr,
+                          int probeack_op, int probeack_param,
+                          const std::vector<uint64_t>& pa_data,
+                          int exp_b_param,
+                          int exp_respCode, bool exp_data) {
+        std::printf("Snoop: snp_op=0x%02x tid=0x%02x src=%d addr=0x%lx\n",
+                    snp_op, txnID, srcID, addr);
+        // Pre-load the master's probe response
+        TLCReq rsp{};
+        rsp.opcode = probeack_op;
+        rsp.param  = probeack_param;
+        rsp.size   = 6;
+        rsp.source = 0;
+        rsp.data   = pa_data;
+        master.probeRsp.push_back(rsp);
+        // Queue the snoop
+        CHISnpInject snp{snp_op, txnID, srcID, addr};
+        hn.snpInjectQueue.push_back(snp);
+        int probes_before = master.probesSeen;
+        uint64_t start_time = main_time;
+        while (true) {
+            tick();
+            // exit once HN has the result and master saw a probe
+            auto it = hn.snpResults.find(txnID);
+            if (it != hn.snpResults.end() && it->second.complete
+                && master.probesSeen > probes_before) {
+                break;
+            }
+            if (main_time - start_time > 400) {
+                std::printf("TIMEOUT snoop (time=%ld)\n", main_time);
+                errs++;
+                break;
+            }
+        }
+        auto it = hn.snpResults.find(txnID);
+        if (it != hn.snpResults.end()) {
+            CHECK(it->second.respCode == exp_respCode,
+                  "Snp resp mismatch: exp 0x%x got 0x%x",
+                  exp_respCode, it->second.respCode);
+            CHECK(it->second.dataSeen == exp_data,
+                  "Snp data presence mismatch: exp %d got %d",
+                  (int)exp_data, (int)it->second.dataSeen);
+            if (exp_data) {
+                CHECK((int)it->second.data.size() == BEATS_PER_LINE,
+                      "Snp data beat count mismatch: exp %d got %zu",
+                      BEATS_PER_LINE, it->second.data.size());
+            }
+        }
+        // bridge expected to issue Probe with this param
+        (void)exp_b_param;
+    };
+
+    // 1. SnpShared (ProbeAck TtoB → SnpResp SC)
+    run_snoop(SNP_SnpShared, 0x10, 1, 0x9000, OP_ProbeAck, P_TtoB,
+              {}, B_toB, CHI_SC, false);
+
+    // 2. SnpUnique (ProbeAck TtoN → SnpResp I)
+    run_snoop(SNP_SnpUnique, 0x11, 1, 0xA000, OP_ProbeAck, P_TtoN,
+              {}, B_toN, CHI_I, false);
+
+    // 3. SnpShared + dirty (ProbeAckData TtoB → SnpRespData SC_PD = 0x5)
+    std::vector<uint64_t> snp_data;
+    for (int i = 0; i < BEATS_PER_LINE; i++) snp_data.push_back(0xBADC0FFEE0000000ULL | i);
+    run_snoop(SNP_SnpShared, 0x12, 1, 0xB000, OP_ProbeAckData, P_TtoB,
+              snp_data, B_toB, 0x5, true);
+
+    // 4. SnpUnique + dirty (ProbeAckData TtoN → SnpRespData I_PD = 0x4)
+    std::vector<uint64_t> snp_data2;
+    for (int i = 0; i < BEATS_PER_LINE; i++) snp_data2.push_back(0xC0FFEE0000000000ULL | i);
+    run_snoop(SNP_SnpUnique, 0x13, 1, 0xC000, OP_ProbeAckData, P_TtoN,
+              snp_data2, B_toN, 0x4, true);
+
     tfp->close();
     delete dut;
     if (errs > 0) { std::printf("FAILED with %d errors\n", errs); return 1; }
-    std::printf("CHI Stage 4 TB: PASS\n"); return 0;
+    std::printf("CHI Stage 5 TB: PASS\n"); return 0;
 }

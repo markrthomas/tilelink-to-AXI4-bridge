@@ -1,6 +1,6 @@
 # TL-C → CHI Bridge — Staged Implementation Plan
 
-**Status:** Stages 1–4 landed 2026-05-29; Stages 5–7 pending.
+**Status:** Stages 1–5 landed 2026-05-29; Stages 6–7 pending.
 **As of:** 2026-05-29
 **Direction:** TL-C upstream → CHI Issue-E downstream
 **Module name:** `TLCToCHI`
@@ -183,39 +183,70 @@ routes through `WriteBackFull` (drop to I) or `WriteCleanFull`
 - `make cocotb-chi` PASS: 2 tests.
 - `make regress` PASS with no regression.
 
-### Stage 5 — Snoop path *(hardest)*
+### ~~Stage 5 — Snoop path~~ ✓ DONE 2026-05-29
 
 Turn incoming CHI snoops into TL-B Probes; forward TL-C
-`ProbeAck`/`ProbeAckData` back as CHI `SnpResp`.  This is where the
-canonical TL-C deadlock pits live.
+`ProbeAck`/`ProbeAckData` back as CHI `SnpResp` / `SnpRespData`.
 
-**Mapping**
+**Mapping (as landed)**
 | CHI | TL |
 |---|---|
-| SNP `SnpShared` / `SnpNotSharedDirty` | TL-B `Probe(toB)` |
-| SNP `SnpUnique` | TL-B `Probe(toN)` |
-| SNP `SnpClean` | TL-B `Probe(toB)` + require data if dirty |
-| SNP `SnpOnce` | TL-B `Probe` allowing source to keep state |
-| SNP `SnpMakeInvalid` | TL-B `Probe(toN)`, no data |
-| TL-C `ProbeAck` | RSP `SnpResp` |
-| TL-C `ProbeAckData` | DAT `SnpRespData` |
+| SNP `SnpShared` / `SnpClean` / `SnpNotSharedDirty` | TL-B `Probe(toB)` |
+| SNP `SnpUnique` / `SnpCleanInvalid` / `SnpMakeInvalid` | TL-B `Probe(toN)` |
+| TL-C `ProbeAck`     (clean retained)  | RSP `SnpResp(SC)` |
+| TL-C `ProbeAck`     (`*N`)            | RSP `SnpResp(I)` |
+| TL-C `ProbeAckData` (`TtoB`)          | DAT `SnpRespData(SC+PassDirty=0x5)` |
+| TL-C `ProbeAckData` (`TtoN`)          | DAT `SnpRespData(I+PassDirty=0x4)` |
 
-**Critical correctness work**
-- **Probe ↔ Release race.**  The host may issue a `Release` for the
-  same line just before the bridge dispatches a `Probe`.  Bridge must
-  collapse: drop the Probe and answer the snoop with the released state.
-- **CHI ExpCompAck ordering.**  Snoops to addresses with outstanding
-  `ReadUnique` requests must respect CHI §B2 hazard rules.
-- **TL-B forward-progress.**  Bridge must not block TL-A on TL-B
-  (deadlock).
+The probe param is derived purely from the snoop opcode (invalidating
+snoops → `toN`, all others → `toB`); the snoop response code is derived
+from the param the master returns on C.  `SnpOnce` is treated as a plain
+`toB` probe.
 
-**Verification additions**
-- TB CHI HN model gains a snooper with configurable post-grant delay
-- Directed snoop tests: each Snp* opcode against each cached state
-- Formal: F-CHI-6 (every Snp produces exactly one SnpResp),
-  F-CHI-7 (no Probe without a covering CHI Snp),
-  F-CHI-8 (Probe-Release race resolved deterministically)
-- Cocotb: snoop-while-modified, snoop-while-shared, snoop-during-acquire
+**Deliverables (all landed)**
+- Snoop engine in `TLCToCHI.scala`: a 5-state FSM
+  (Idle → Probe → WaitC → DataFwd → Rsp) running in parallel with the
+  acquire and release engines.  rxsnp intake → TL-B Probe →
+  TL-C ProbeAck/ProbeAckData → CHI SnpResp (txrsp) / SnpRespData (txdat).
+- Shared-channel arbitration extended: txrsp = acquire (CompAck) >
+  snoop (SnpResp); txdat = release (CopyBackWrData) > snoop
+  (SnpRespData).  C-channel intake routed by opcode — ProbeAck families
+  to snoop, Release families to release — so a single C-beat is consumed
+  by exactly one engine.
+- TB extension (`test/cpp/tb_chi.cpp`): TL-B Probe sink, pre-loadable
+  probe responses, CHI HN snoop injector + SnpResp/SnpRespData collector.
+  4 new directed snoop jobs (SnpShared/SnpUnique × ProbeAck/ProbeAckData).
+- Cocotb: `test_snoop_mixed` covers the same four cases on Icarus.
+- Formal additions (`tlctochi_props.sv`): F-CHI-6 (snoop response
+  conservation — SnpResp/SnpRespData only with a live snoop, txnID
+  echo), F-CHI-7 (no Probe without a covering snoop; Probe addr/param
+  match the snoop), F-CHI-8 (probe/release race determinism — each
+  shared txrsp/txdat beat is exactly one engine's, no double-claim).
+  Snoop "in flight" is derived from the DUT's own `rxsnp_ready`
+  (=`sSnpIdle`) so the shadow can't desync from variable SnpRespData
+  beat counts.  Cover goals added for Probe issued, SnpResp,
+  SnpRespData, and snoop concurrent with acquire / release.
+
+**Stage 5 limit — probe ↔ release race not collapsed.**  The original
+plan called for the bridge to *collapse* a Probe that races a same-line
+`Release` (drop the Probe, answer the snoop from the released state).
+The implemented bridge instead keeps the snoop and release engines fully
+independent: if a Release and a Probe for the same line are both in
+flight, the TL master is expected to answer the Probe even though it just
+issued the Release, and both transactions complete on their own.  F-CHI-8
+proves the two engines never corrupt each other on the shared channels
+and the cover goals show the both-in-flight window is reachable, but true
+collapse (and the CHI §B2 ExpCompAck hazard interplay) is deferred.  This
+is the documented behavior in `TLCToCHI.scala`'s Stage 5 header.
+
+**Exit criteria met**
+- `make sim-chi` PASS: 12 directed jobs (4 acquires + 4 releases + 4 snoops).
+- `make formal-chi` BMC depth 20 PASS, all 11 cover goals reached
+  (`chi` formal target now runs both `chi-bmc` and `chi-cover`, matching
+  the ulite/uc variants).
+- `make cocotb-chi` PASS: 3 tests.
+- `make regress` PASS — TLUH 183 jobs, ULite 24, UC 11, CHI 12; all
+  6 lint targets clean; no regression.
 
 ### Stage 6 — Atomics, CMO, prefetch
 
@@ -333,35 +364,34 @@ doc/
 
 ## 8. Status & next step
 
-**Stages 1–4 landed 2026-05-29.**  Read path (Stages 1–3) and
-release path (Stage 4) both shipped in the same day.  TxnID
+**Stages 1–5 landed 2026-05-29.**  Read path (Stages 1–3), release
+path (Stage 4), and snoop path (Stage 5) all shipped the same day.
+Three engines (acquire / release / snoop) run in parallel.  TxnID
 partition (`{1'b0, src}` for acquires, `{1'b1, src}` for releases)
-keeps the engines disjoint and forms the basis for F-CHI-5 in
-formal.
+keeps the request engines disjoint on rxrsp; the snoop engine echoes
+the HN-chosen txnID and shares txrsp/txdat with acquire/release under
+acquire/release-first priority.  F-CHI-1..8 hold at BMC depth 20 with
+11 cover goals reachable.
 
 The four open questions in §2 were settled as follows:
-1. **DCT/DMT:** off for Stage 1; revisit at Stage 5.
+1. **DCT/DMT:** off for Stage 1; still off through Stage 5 — revisit
+   at Stage 6.
 2. **CHI HN model:** hand-rolled from the spec.  TB and cocotb
    harness both serve full Issue-E semantics for the opcodes
-   exercised so far (Read*, MakeUnique, Evict, WriteBack/Clean).
+   exercised so far (Read*, MakeUnique, Evict, WriteBack/Clean,
+   SnpShared, SnpUnique with ProbeAck / ProbeAckData).
 3. **Multi-line atomics:** confirmed disallowed — bridge will enforce
    `a.size ≤ log2(lineBytes)` for atomics at elaboration.
 4. **Cache line:** pinned at 64 B.
 
-**Next step is a separate go-ahead** to start Stage 5 (snoop path:
-CHI `Snp*` → TL-B `Probe`, with TL-C `ProbeAck` / `ProbeAckData`
-fed back as CHI `SnpResp` / `SnpRespData`).  This is the biggest
-stage by budget (4 weeks) and the one where the canonical TL-C
-deadlock pits live (probe ↔ release race, CHI hazard rules).
-Will need:
-- Probe engine in `TLCToCHI.scala`: SNP intake, TL-B issue, TL-C
-  ProbeAck/ProbeAckData consumption, CHI SnpResp/SnpRespData
-  issue.
-- Probe ↔ release race resolution: if a TL master issues a Release
-  for a line under active CHI snoop, collapse the probe and answer
-  the snoop with the released state.
-- F-CHI-6..8 (probe-snoop conservation, no spurious probes,
-  probe-release race resolved deterministically).
-- TB extension with a CHI HN snooper that issues snoops at
-  configurable delay relative to acquire grants.
-- One cocotb test (`test_acquire_ntob`) and 5+ directed C++ jobs.
+**Next step is a separate go-ahead** to start Stage 6 (atomics, CMO,
+prefetch).  Before that, two Stage 5 follow-ups are worth scheduling:
+- **Probe ↔ release collapse.**  Stage 5 deliberately does *not*
+  collapse a Probe that races a same-line Release (see the Stage 5
+  limit above).  True collapse plus the CHI §B2 ExpCompAck hazard
+  interplay is deferred; revisit if a real host needs it.
+- **Snoop verification breadth.**  Stage 5 covers SnpShared/SnpUnique
+  with ProbeAck/ProbeAckData; the remaining Snp* opcodes
+  (SnpClean, SnpCleanInvalid, SnpMakeInvalid, SnpNotSharedDirty) are
+  mapped and lint/formal-legal but not yet directed-tested.  Fold into
+  the Stage 7 randomized sweep.

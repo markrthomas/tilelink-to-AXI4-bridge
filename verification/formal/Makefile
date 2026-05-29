@@ -42,7 +42,7 @@ uc-cover: $(UC_RTL_SV)
 	$(SBY) -f tluctoaxi4.sby cover
 
 # ---- TL-C → CHI variant ----
-chi: chi-bmc
+chi: chi-bmc chi-cover
 
 chi-bmc: $(CHI_RTL_SV)
 	@command -v $(SBY) >/dev/null 2>&1 || { echo "[formal] sby not on PATH"; exit 1; }
