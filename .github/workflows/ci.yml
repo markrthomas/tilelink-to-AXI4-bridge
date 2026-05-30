@@ -86,6 +86,11 @@ jobs:
       - uses: sbt/setup-sbt@v1
       - name: Install OSS CAD Suite (SymbiYosys + Yosys + solvers)
         uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          # Pin to a known-good build: the unpinned latest nightly ships
+          # Verilator 5.049, which ICEs on TLCToCHI.sv (SEL AstNode crash
+          # under --coverage).  2026-04-13 ships the working Verilator 5.047.
+          version: '2026-04-13'
       - name: BMC + cover (make formal)
         run: make formal
 
@@ -110,6 +115,11 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
       - name: Install OSS CAD Suite (SymbiYosys + Yosys + solvers)
         uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          # Pin to a known-good build.  This suite's Verilator (5.047)
+          # shadows the apt one on PATH and is what coverage-chi actually
+          # uses; the unpinned nightly's 5.049 ICEs under --coverage.
+          version: '2026-04-13'
       - name: Lint + directed + randomized simulation (make regress-chi)
         run: make regress-chi
       - name: BMC depth 30 + cover (make formal-chi)
