@@ -101,6 +101,7 @@ stages:
 | Verilator `--lint-only` (TL-UL → AXI4-Lite variant) | `make lint-ulite` |
 | Verilator `--lint-only` (TL-UC → AXI4 variant) | `make lint-uc` |
 | Elaborate + lint `dataBits` width sweep | `make lint-widths` |
+| Light local gate: lint + sim (TL-UH bridge only) | `make check` |
 | Lint + sim across all three bridges (fast CI gate) | `make regress` |
 | Lint + sim for the AXI-Lite variant only | `make regress-ulite` |
 | Lint + sim for the TL-UC variant only | `make regress-uc` |
@@ -124,6 +125,10 @@ WAVE_FILE=verification/formal/tluhtoaxi4_cover/engine_0/trace2.vcd`.
 
 GitHub Actions coverage lives in `.github/workflows/ci.yml`, with separate
 `regress`, `coverage`, `formal`, and `cocotb` jobs.
+
+These target names follow the shared convention described in
+[`DV_STANDARDS.md`](DV_STANDARDS.md), common across this maintainer's
+RTL/DV repos.
 
 ## Bridge mapping (summary)
 

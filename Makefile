@@ -141,6 +141,7 @@ CHI_VERILATOR_FLAGS := \
     -CFLAGS "-std=c++17 -O2"
 
 .PHONY: help all elab elab-widths build sim run lint lint-decoder lint-widths lint-ulite lint-uc lint-chi \
+        check \
         build-ulite sim-ulite cocotb-ulite formal-ulite regress regress-ulite \
         build-uc sim-uc cocotb-uc formal-uc regress-uc \
         build-chi sim-chi cocotb-chi formal-chi regress-chi coverage-chi \
@@ -182,6 +183,7 @@ help:
 	@echo "  sim-chi       Run the TL-C -> CHI TB (gated on Stage 2)"
 	@echo "  formal-chi    SymbiYosys BMC + cover (gated on Stage 2)"
 	@echo "  cocotb-chi    cocotb tests (gated on Stage 2)"
+	@echo "  check         light local gate: lint + sim (TL-UH bridge only)"
 	@echo "  regress       lint(s) + sim across TLUH/ULite/UC plus lint-chi"
 	@echo "  regress-ulite lint-ulite + sim-ulite"
 	@echo "  regress-uc    lint-uc + sim-uc"
@@ -292,6 +294,10 @@ formal-chi: $(CHI_SV)
 
 cocotb-chi: $(CHI_SV)
 	$(MAKE) -C cocotb chi
+
+# check: the light local gate (DV_STANDARDS.md) — lint + sim for the
+# default TL-UH variant only.  regress/ci cover the other variants.
+check: lint sim
 
 # Regress wires in CHI sim now that Stage 3 (NtoB / NtoT / BtoT /
 # AcquirePerm) is exercised end-to-end.  formal-chi and cocotb-chi
