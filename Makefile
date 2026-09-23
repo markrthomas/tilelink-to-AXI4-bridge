@@ -152,6 +152,12 @@ CHI_VERILATOR_FLAGS := \
 WAVE_VIEWER ?= gtkwave
 # Default trace path — `make wave WAVE_FILE=foo.vcd` opens an arbitrary VCD.
 WAVE_FILE   ?= sim.vcd
+# Curated GTKWave layout: groups the TLUHToAXI4 top-level interface by
+# function (clock/reset, FSM, TL-A, TL-D, AXI AW/W/B/AR/R) so `make wave`
+# opens with a readable signal set instead of an empty SST pane. Only
+# applied when the viewer is gtkwave itself (other viewers don't read
+# .gtkw save files).
+WAVE_GTKW   ?= verification/waves/tluhtoaxi4.gtkw
 BMC_TRACE   := verification/formal/tluhtoaxi4_bmc/engine_0/trace.vcd
 COVER_TRACE := verification/formal/tluhtoaxi4_cover/engine_0/trace0.vcd
 
@@ -192,13 +198,14 @@ help:
 	@echo "  cov-report    Coverage + HTML report via genhtml (lcov)"
 	@echo "  formal        SymbiYosys BMC + cover (verification/formal/)"
 	@echo "  cocotb        cocotb directed tests on Icarus (cocotb/)"
-	@echo "  wave          run sim then open sim.vcd in GTKWave"
+	@echo "  wave          run sim then open sim.vcd in GTKWave with the"
+	@echo "                curated verification/waves/tluhtoaxi4.gtkw layout"
 	@echo "  wave-formal   open the formal cover witness in GTKWave"
 	@echo "  wave-bmc      open the BMC counter-example (if present)"
 	@echo "  ci            regress + coverage + formal + cocotb"
 	@echo "  clean         wipe every generated artifact"
 	@echo ""
-	@echo "Overrides: WAVE_VIEWER=surfer  WAVE_FILE=path/to.vcd"
+	@echo "Overrides: WAVE_VIEWER=surfer  WAVE_FILE=path/to.vcd  WAVE_GTKW=path/to.gtkw"
 
 all: sim
 
@@ -308,15 +315,24 @@ regress-uc: lint-uc sim-uc
 regress-chi: lint-chi sim-chi
 
 # --------- Waveforms ---------
-# `wave` runs the sim (refreshing sim.vcd if anything changed) and pops up
-# GTKWave on the result.  Override WAVE_FILE to view a different VCD:
+# `wave` runs the sim (refreshing sim.vcd if anything changed) — which
+# always includes the 124-job randomized sweep alongside the directed
+# jobs, since tb_main.cpp has no directed/random test split to default
+# between — and pops up GTKWave on the result with the curated
+# verification/waves/tluhtoaxi4.gtkw layout (signals grouped by function:
+# clock/reset, FSM, TL-A, TL-D, AXI AW/W/B/AR/R). Override WAVE_FILE to
+# view a different VCD, or WAVE_GTKW for a different layout:
 #   make wave WAVE_FILE=verification/formal/.../trace0.vcd
 #   make wave WAVE_VIEWER=surfer
 wave: sim
 	@command -v $(WAVE_VIEWER) >/dev/null 2>&1 || { \
 	    echo "$(WAVE_VIEWER) not on PATH — install it or override WAVE_VIEWER"; exit 1; }
 	@test -f $(WAVE_FILE) || { echo "$(WAVE_FILE) not found"; exit 1; }
-	$(WAVE_VIEWER) $(WAVE_FILE) &
+	@if [ "$(WAVE_VIEWER)" = "gtkwave" ] && [ -f "$(WAVE_GTKW)" ]; then \
+	    $(WAVE_VIEWER) $(WAVE_FILE) $(WAVE_GTKW) & \
+	else \
+	    $(WAVE_VIEWER) $(WAVE_FILE) & \
+	fi
 
 # Cover-witness trace from SymbiYosys (depth-bounded reachability example).
 # Multiple witnesses exist in tluhtoaxi4_cover/engine_0/trace*.vcd; this opens

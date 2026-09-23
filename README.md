@@ -114,13 +114,24 @@ stages:
 | cocotb directed tests, TL-UL → AXI4-Lite (Icarus) | `make cocotb-ulite` |
 | cocotb directed tests, TL-UC → AXI4 (Icarus) | `make cocotb-uc` |
 | Regress + coverage + formal + cocotb across all three bridges (full local CI) | `make ci` |
-| Run sim and open `sim.vcd` in GTKWave | `make wave` |
+| Run sim and open `sim.vcd` in GTKWave, grouped by function | `make wave` |
 | Open the formal cover witness in GTKWave | `make wave-formal` |
 | Open the BMC counter-example (only after a failure) | `make wave-bmc` |
 | Clean every generated artifact | `make clean` |
 
-The wave targets honor `WAVE_VIEWER` (default `gtkwave`) and `WAVE_FILE`
-(default `sim.vcd`).  Example: `make wave WAVE_VIEWER=surfer
+`make wave` runs the default TL-UH testbench (`tb_main.cpp`) — 13
+directed jobs plus a 100-job randomized sweep and a 24-pair atomic
+concurrency stress, all in the same run, since that TB has no
+directed/random split to default between — and opens the result in
+GTKWave with the curated
+[`verification/waves/tluhtoaxi4.gtkw`](verification/waves/tluhtoaxi4.gtkw)
+layout: signals grouped into Clock/Reset, Bridge FSM, TileLink A/D, and
+AXI4 AW/W/B/AR/R sections instead of an empty SST pane.
+
+The wave targets honor `WAVE_VIEWER` (default `gtkwave`), `WAVE_FILE`
+(default `sim.vcd`), and `WAVE_GTKW` (default
+`verification/waves/tluhtoaxi4.gtkw`, applied only when `WAVE_VIEWER` is
+`gtkwave`).  Example: `make wave WAVE_VIEWER=surfer
 WAVE_FILE=verification/formal/tluhtoaxi4_cover/engine_0/trace2.vcd`.
 
 GitHub Actions coverage lives in `.github/workflows/ci.yml`, with separate

@@ -1,0 +1,93 @@
+[*]
+[*] TLUHToAXI4 — curated GTKWave layout
+[*] Groups signals by function (clock/reset, FSM, TL-A, TL-D, AXI AW/W/B, AXI AR/R)
+[*] so a fresh `make wave` run is readable without manually dragging signals in.
+[*]
+[dumpfile] "sim.vcd"
+[dumpfile_mtime] "0"
+[dumpfile_size] 0
+[savefile] "verification/waves/tluhtoaxi4.gtkw"
+[timestart] 0
+[size] 1600 900
+[pos] -1 -1
+[sst_width] 300
+[signals_width] 300
+[sst_expanded] 1
+[sst_vpaned_height] 350
+@28
+-Clock / Reset
+@22
+TOP.TLUHToAXI4.clock
+TOP.TLUHToAXI4.reset
+@28
+-Bridge FSM
+@22
+TOP.TLUHToAXI4.state[2:0]
+@28
+-TileLink A (request)
+@22
+TOP.TLUHToAXI4.io_tl_a_valid
+TOP.TLUHToAXI4.io_tl_a_ready
+TOP.TLUHToAXI4.io_tl_a_bits_opcode[2:0]
+TOP.TLUHToAXI4.io_tl_a_bits_param[2:0]
+TOP.TLUHToAXI4.io_tl_a_bits_size[5:0]
+TOP.TLUHToAXI4.io_tl_a_bits_source[3:0]
+TOP.TLUHToAXI4.io_tl_a_bits_address[31:0]
+TOP.TLUHToAXI4.io_tl_a_bits_mask[7:0]
+TOP.TLUHToAXI4.io_tl_a_bits_data[63:0]
+TOP.TLUHToAXI4.io_tl_a_bits_corrupt
+@28
+-TileLink D (response)
+@22
+TOP.TLUHToAXI4.io_tl_d_valid
+TOP.TLUHToAXI4.io_tl_d_ready
+TOP.TLUHToAXI4.io_tl_d_bits_opcode[2:0]
+TOP.TLUHToAXI4.io_tl_d_bits_size[5:0]
+TOP.TLUHToAXI4.io_tl_d_bits_source[3:0]
+TOP.TLUHToAXI4.io_tl_d_bits_data[63:0]
+TOP.TLUHToAXI4.io_tl_d_bits_denied
+TOP.TLUHToAXI4.io_tl_d_bits_corrupt
+@28
+-AXI4 Write Address (AW)
+@22
+TOP.TLUHToAXI4.io_axi_aw_valid
+TOP.TLUHToAXI4.io_axi_aw_ready
+TOP.TLUHToAXI4.io_axi_aw_bits_id[3:0]
+TOP.TLUHToAXI4.io_axi_aw_bits_addr[31:0]
+TOP.TLUHToAXI4.io_axi_aw_bits_len[7:0]
+TOP.TLUHToAXI4.io_axi_aw_bits_size[2:0]
+@28
+-AXI4 Write Data (W)
+@22
+TOP.TLUHToAXI4.io_axi_w_valid
+TOP.TLUHToAXI4.io_axi_w_ready
+TOP.TLUHToAXI4.io_axi_w_bits_data[63:0]
+TOP.TLUHToAXI4.io_axi_w_bits_strb[7:0]
+TOP.TLUHToAXI4.io_axi_w_bits_last
+@28
+-AXI4 Write Response (B)
+@22
+TOP.TLUHToAXI4.io_axi_b_valid
+TOP.TLUHToAXI4.io_axi_b_ready
+TOP.TLUHToAXI4.io_axi_b_bits_id[3:0]
+TOP.TLUHToAXI4.io_axi_b_bits_resp[1:0]
+@28
+-AXI4 Read Address (AR)
+@22
+TOP.TLUHToAXI4.io_axi_ar_valid
+TOP.TLUHToAXI4.io_axi_ar_ready
+TOP.TLUHToAXI4.io_axi_ar_bits_id[3:0]
+TOP.TLUHToAXI4.io_axi_ar_bits_addr[31:0]
+TOP.TLUHToAXI4.io_axi_ar_bits_len[7:0]
+TOP.TLUHToAXI4.io_axi_ar_bits_size[2:0]
+@28
+-AXI4 Read Data (R)
+@22
+TOP.TLUHToAXI4.io_axi_r_valid
+TOP.TLUHToAXI4.io_axi_r_ready
+TOP.TLUHToAXI4.io_axi_r_bits_id[3:0]
+TOP.TLUHToAXI4.io_axi_r_bits_data[63:0]
+TOP.TLUHToAXI4.io_axi_r_bits_resp[1:0]
+TOP.TLUHToAXI4.io_axi_r_bits_last
+[pattern_trace] 1
+[pattern_trace] 0
