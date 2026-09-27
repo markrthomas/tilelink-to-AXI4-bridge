@@ -675,7 +675,13 @@ int main(int argc, char** argv) {
 
     // Randomized sweep — 100 jobs with rotating sources to keep the parallel
     // engines fed and exercise the D-arbiter under load.
-    std::mt19937 rng(0xC0FFEE);
+    // +seed=<n> reseeds it (`make wave` passes a fresh one); default 0xC0FFEE.
+    uint32_t seed = 0xC0FFEE;
+    if (const char* arg = Verilated::commandArgsPlusMatch("seed=")) {
+        if (*arg) seed = (uint32_t)std::strtoul(arg + std::strlen("+seed="), nullptr, 0);
+    }
+    std::printf("Randomized sweep seed = %u (replay with +seed=%u)\n", seed, seed);
+    std::mt19937 rng(seed);
     std::uniform_int_distribution<int> sizeDist(0, 5);  // up to 32B
     std::uniform_int_distribution<int> opDist(0, 5);    // bias toward put/get over hint
     const int RANDOM_JOBS = 100;
@@ -683,6 +689,14 @@ int main(int argc, char** argv) {
         int size = sizeDist(rng);
         int bytes = 1 << size;
         uint32_t addr = (rng() & 0x0FFFu) & ~((uint32_t)bytes - 1u);
+        // Keep off the AXISlave's error-injection beats (AXI addr 0xD00 ->
+        // RRESP SLVERR, 0xD80 -> BRESP DECERR, used by Tests 12/13). The bridge
+        // issues the beat-aligned address, so a sub-beat access anywhere in
+        // those beats (e.g. 0xD84) is correctly denied but checked here as a
+        // normal access. ^0x100 keeps alignment and draws no RNG, so the rest
+        // of the stream is unchanged; seeds such as +seed=1 / +seed=42 hit them.
+        const uint32_t beatAddr = addr & ~(uint32_t)BEAT_BYTES_M;
+        if (beatAddr == 0xD00u || beatAddr == 0xD80u) addr ^= 0x100u;
         // Rotate source IDs so adjacent jobs typically have different
         // sources — encourages the bridge's engines to overlap.
         int src = ((t * 7) + (rng() & 0x7)) & 0xF;
