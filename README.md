@@ -122,10 +122,12 @@ stages:
 `make wave` runs the default TL-UH testbench (`tb_main.cpp`) — 13
 directed jobs plus a 100-job randomized sweep and a 24-pair atomic
 concurrency stress, all in the same run, since that TB has no
-directed/random split to default between — and opens the result in
-GTKWave with the curated
+directed/random split to default between. The randomized sweep gets a fresh
+seed every run (printed; `make wave SEED=<n>` replays it, and plain
+`make sim` keeps the fixed default). It then opens the result in
+GTKWave, zoomed to fit, with the curated
 [`verification/waves/tluhtoaxi4.gtkw`](verification/waves/tluhtoaxi4.gtkw)
-layout: signals grouped into Clock/Reset, Bridge FSM, TileLink A/D, and
+layout: signals grouped into Clock/Reset, Bridge FSMs (read/write/atomic/E), TileLink A/D, and
 AXI4 AW/W/B/AR/R sections instead of an empty SST pane.
 
 The wave targets honor `WAVE_VIEWER` (default `gtkwave`), `WAVE_FILE`

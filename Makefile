@@ -219,7 +219,7 @@ build $(SIM_EXE): $(SV) $(TB_SRC)
 	$(VERILATOR) $(VERILATOR_FLAGS) -o VTLUHToAXI4 $(SV) $(TB_SRC)
 
 sim: $(SIM_EXE)
-	cd $(BUILD_DIR) && ./VTLUHToAXI4
+	cd $(BUILD_DIR) && ./VTLUHToAXI4 $(if $(SEED),+seed=$(SEED))
 	-@mv -f $(BUILD_DIR)/sim.vcd sim.vcd 2>/dev/null
 
 run: sim
@@ -315,21 +315,28 @@ regress-uc: lint-uc sim-uc
 regress-chi: lint-chi sim-chi
 
 # --------- Waveforms ---------
-# `wave` runs the sim (refreshing sim.vcd if anything changed) — which
-# always includes the 124-job randomized sweep alongside the directed
-# jobs, since tb_main.cpp has no directed/random test split to default
-# between — and pops up GTKWave on the result with the curated
-# verification/waves/tluhtoaxi4.gtkw layout (signals grouped by function:
-# clock/reset, FSM, TL-A, TL-D, AXI AW/W/B/AR/R). Override WAVE_FILE to
-# view a different VCD, or WAVE_GTKW for a different layout:
+# `wave`: one random run end to end. Rebuilds if needed and runs the TL-UH
+# harness — the directed jobs plus the randomized sweep, which gets a fresh
+# random seed each run (printed; SEED=<n> replays; plain `make sim` keeps the
+# fixed default seed) — then opens GTKWave on sim.vcd with the curated
+# verification/waves/tluhtoaxi4.gtkw layout (clock/reset, FSM, TL-A, TL-D,
+# AXI AW/W/B/AR/R), zoomed to fit (verification/waves/zoom_full.tcl). Waves
+# open on a FAIL too. Override WAVE_FILE to view a different VCD, or
+# WAVE_GTKW for a different layout:
 #   make wave WAVE_FILE=verification/formal/.../trace0.vcd
 #   make wave WAVE_VIEWER=surfer
-wave: sim
-	@command -v $(WAVE_VIEWER) >/dev/null 2>&1 || { \
-	    echo "$(WAVE_VIEWER) not on PATH — install it or override WAVE_VIEWER"; exit 1; }
+WAVE_SEED := $(or $(SEED),$(shell echo $$(( $$(od -An -N4 -tu4 /dev/urandom) % 2147483646 + 1 ))))
+wave: $(SIM_EXE)
+	@echo "[WAVE] TL-UH harness with random sweep seed: SEED=$(WAVE_SEED)"
+	-cd $(BUILD_DIR) && ./VTLUHToAXI4 +seed=$(WAVE_SEED) | tee wave.log
+	-@mv -f $(BUILD_DIR)/sim.vcd sim.vcd 2>/dev/null
+	@if grep -q "\*\*\* PASS" $(BUILD_DIR)/wave.log; then echo "[WAVE] PASS (SEED=$(WAVE_SEED))"; \
+	else echo "[WAVE] *** TEST FAILED (SEED=$(WAVE_SEED)) — opening waves for debug ***"; fi
 	@test -f $(WAVE_FILE) || { echo "$(WAVE_FILE) not found"; exit 1; }
-	@if [ "$(WAVE_VIEWER)" = "gtkwave" ] && [ -f "$(WAVE_GTKW)" ]; then \
-	    $(WAVE_VIEWER) $(WAVE_FILE) $(WAVE_GTKW) & \
+	@if ! command -v $(WAVE_VIEWER) >/dev/null 2>&1; then \
+	    echo "[WAVE] $(WAVE_VIEWER) not on PATH — VCD is at $(WAVE_FILE)"; \
+	elif [ "$(WAVE_VIEWER)" = "gtkwave" ] && [ -f "$(WAVE_GTKW)" ]; then \
+	    $(WAVE_VIEWER) -S verification/waves/zoom_full.tcl $(WAVE_FILE) $(WAVE_GTKW) & \
 	else \
 	    $(WAVE_VIEWER) $(WAVE_FILE) & \
 	fi

@@ -22,7 +22,10 @@ TOP.TLUHToAXI4.reset
 @28
 -Bridge FSM
 @22
-TOP.TLUHToAXI4.state[2:0]
+TOP.TLUHToAXI4.rState[1:0]
+TOP.TLUHToAXI4.wState[1:0]
+TOP.TLUHToAXI4.aState[2:0]
+TOP.TLUHToAXI4.eState[1:0]
 @28
 -TileLink A (request)
 @22
