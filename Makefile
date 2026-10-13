@@ -195,6 +195,7 @@ help:
 	@echo "  regress-uc    lint-uc + sim-uc"
 	@echo "  regress-chi   lint-chi (Stage 1)"
 	@echo "  coverage      Verilator --coverage build + coverage.info"
+	@echo "  stress        stress / randomized simulation (n/a stub if none)"
 	@echo "  cov-report    Coverage + HTML report via genhtml (lcov)"
 	@echo "  formal        SymbiYosys BMC + cover (verification/formal/)"
 	@echo "  cocotb        cocotb directed tests on Icarus (cocotb/)"
@@ -399,3 +400,8 @@ clean:
 	rm -rf $(GEN_DIR) $(BUILD_DIR) $(ULITE_BUILD) $(UC_BUILD) $(CHI_BUILD) $(COV_DIR) $(CHI_COV_DIR) sim.vcd sim_ulite.vcd sim_uc.vcd sim_chi.vcd $(COV_INFO) $(CHI_COV_INFO) coverage_html target project/target project/project
 	$(MAKE) -C verification/formal clean
 	rm -rf cocotb/sim_build cocotb/sim_build_ulite cocotb/sim_build_uc cocotb/sim_build_chi cocotb/__pycache__ cocotb/results.xml cocotb/*.vcd
+
+# Standard DV target (DV_STANDARDS.md)
+.PHONY: stress
+stress:
+	@echo "[STRESS] n/a: no stress/randomized tier in this repo yet (see DV_STANDARDS.md)"
