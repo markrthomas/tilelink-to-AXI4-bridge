@@ -1,0 +1,15 @@
+.git
+build/
+generated/
+target/
+project/target/
+project/project/
+cocotb/sim_build*/
+verification/formal/*_bmc/
+verification/formal/*_cover/
+verification/formal/*_prove/
+coverage*.info
+coverage*.dat
+coverage_html/
+*.vcd
+*.fst

@@ -207,6 +207,9 @@ help:
 	@echo "  clean         wipe every generated artifact"
 	@echo ""
 	@echo "Overrides: WAVE_VIEWER=surfer  WAVE_FILE=path/to.vcd  WAVE_GTKW=path/to.gtkw"
+	@echo "  swarm      Swarm A (verification) via Claude Code; swarm-rr = Swarm B (random regression); swarm-dry = show the command"
+	@echo "  batch      the Railway batch (docker/entrypoint.sh ci); board = swarm status; heavy T=<t> = one heavy target at a time"
+	@echo "  swarm-profile / swarm-kit-check   print .claude/swarm.env / check kit drift (shared kit: markrthomas/dv-swarm-kit)"
 
 all: sim
 
@@ -405,3 +408,6 @@ clean:
 .PHONY: stress
 stress:
 	@echo "[STRESS] n/a: no stress/randomized tier in this repo yet (see DV_STANDARDS.md)"
+
+# shared swarm/infra targets (markrthomas/dv-swarm-kit)
+include swarm.mk
