@@ -32,8 +32,9 @@ coverage_chi.info
 coverage.dat
 coverage_html/
 
-# Editor / tooling
-.claude/
+# Editor / tooling (local Claude Code state only; .claude/agents, skills, settings.json, swarm.env are shared)
+.claude/settings.local.json
+.claude/worktrees/
 NOTES
 
 # SymbiYosys scratch dirs (one per task in each .sby)
@@ -57,3 +58,5 @@ cocotb/sim_build_uc/
 cocotb/sim_build_chi/
 cocotb/__pycache__/
 cocotb/results.xml
+/test/random/runs/
+/docker/last-run-metrics.json
