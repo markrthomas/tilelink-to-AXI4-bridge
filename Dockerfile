@@ -16,7 +16,7 @@ FROM ubuntu:24.04 AS tools
 
 ARG SBT_VERSION=1.10.5
 ARG YICES_VERSION=2.6.5
-ARG SBY_REF=main
+ARG SBY_REF=79fc9eddca5e33a28cc2f2cd19c9825efd9a7255   # SymbiYosys main as of 2026-11-10, pinned
 ARG COCOTB_VERSION=1.8.1
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -47,15 +47,16 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir "cocotb==${COCOTB_VERSION}" click
 
 # SymbiYosys (pure Python)
-RUN git clone --depth 1 -b "${SBY_REF}" https://github.com/YosysHQ/sby /tmp/sby \
+RUN git clone https://github.com/YosysHQ/sby /tmp/sby && git -C /tmp/sby checkout "${SBY_REF}" \
     && make -C /tmp/sby install PREFIX=/opt/sby && rm -rf /tmp/sby
 ENV PATH="/opt/sby/bin:$PATH"
 
 # Claude Code CLI + gh for swarm runs (dv-swarm-kit: devcontainer, swarm workflow, Railway swarm service).
 ARG WITH_CLAUDE=0
+ARG CLAUDE_CODE_VERSION=2.1.322   # pinned: bump on purpose, in a PR
 RUN if [ "$WITH_CLAUDE" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends nodejs npm gh \
-      && npm install -g @anthropic-ai/claude-code && rm -rf /var/lib/apt/lists/*; \
+      && npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && rm -rf /var/lib/apt/lists/*; \
     fi
 
 RUN java -version 2>&1 | head -1 && sbt --script-version && verilator --version && iverilog -V | head -1 \
