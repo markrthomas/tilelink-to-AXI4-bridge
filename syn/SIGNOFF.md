@@ -16,8 +16,8 @@ CDC. Complete bridge tops: `TLUHToAXI4` (3191 cells / depth 125), `TLULToAXILite
 | **T1** synthesizable | ◐ **PASS** | `make syn` → `sim/synth_*.v`, `sim/synth_*.log` | Yosys generic synth of the 3 complete tops; latch-free + cell/depth ceilings. Liberty-mapped synth = `needs-pdk`. |
 | **T1-CDC** | n/a | — | Single clock domain; no crossings. |
 | **T2** STA | ◐ collateral | `syn/constraints/tl_axi4.sdc`, `syn/sta/opensta.tcl` | Single clock; Chisel sync reset is a timed input. **Watch item:** atomic/arith cone depth ~125 — confirm timing on the target library. Run = `needs-pdk`. |
-| **T3** low-power | ☐ open | `lp/` (to author) | UPF if gated domains; else document n/a. `needs-license`. |
-| **T4** DFT | ☐ open | `dft/` (to author) | Scan over the parallel read/write/atomic engines; RAM MBIST; ATPG. `needs-license`. |
+| **T3** low-power | ◐ authored + OSS-lint | `make lp` → `syn/lp/tl_axi4.upf`, `syn/lp/LP_PLAN.md` | Single always-on domain (protocol bridge, single clock, no gating partition); LP = clock gating (RTL/SDC), power gating is the integrator's call. UPF consistency lint PASS. |
+| **T4** DFT | ◐ **PASS** (scan-ready) | `make dft` → `syn/dft/reports/`, `syn/dft/DFT_PLAN.md` | All 3 tops latch-free + no comb loops; 313/128/413 flops, **100% reset-controllable**, 0 async, 0 RAM — ideal for scan (single clock, no MBIST). Scan stitch + ATPG = `needs-license`. |
 | **T5** verif sign-off | ◐ partial | 183-job directed + 95.1% line cov + SymbiYosys formal + cocotb | Documented coverage model; **coherence DV** (CHI agent + multi-core soak) once `TLCToCHI` lands; licensed-sim parity. |
 | **T6** GLS + PPA | ☐ open | — | SDF GLS, power, RTL↔netlist LEC, PPA. `needs-pdk`. |
 | **T7** integration/pkg | ☐ open | `pkg/` (to author) | Target a real interconnect top (Chipyard/Rocket); diplomacy params; IP-XACT / Chisel-package deliverable. |

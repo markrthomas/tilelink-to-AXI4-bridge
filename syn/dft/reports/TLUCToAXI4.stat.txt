@@ -1,0 +1,28 @@
+
+7. Printing statistics.
+
+=== TLUCToAXI4 ===
+
+        +----------Local Count, excluding submodules.
+        | 
+     2915 wires
+     5261 wire bits
+      194 public wires
+     2185 public wire bits
+       83 ports
+      741 port bits
+     4026 cells
+      265   $_ANDNOT_
+      729   $_AND_
+      990   $_MUX_
+      851   $_NAND_
+       79   $_NOR_
+      120   $_NOT_
+       53   $_ORNOT_
+      358   $_OR_
+        2   $_SDFFE_PP0N_
+      407   $_SDFFE_PP0P_
+        4   $_SDFF_PP0_
+       27   $_XNOR_
+      141   $_XOR_
+
