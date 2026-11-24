@@ -140,9 +140,20 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
       - uses: sbt/setup-sbt@v1
-      - name: Install yosys
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y yosys
+      - name: Install OSS CAD Suite (Yosys + tclsh) — matches the formal/chi jobs
+        uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}   # authenticated release lookup: avoids the shared-IP API rate limit
+          version: '2026-04-13'
       - name: T1 synthesizability gate (elab + synth, make syn)
         run: make syn
+      - name: T4 DFT scan-readiness audit (latch-free + no comb loops + flop inventory)
+        run: make dft
+      - name: T3 low-power UPF consistency lint
+        run: make lp
+      - name: Upload DFT scan-readiness reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: dft-reports
+          path: syn/dft/reports/
+          if-no-files-found: ignore

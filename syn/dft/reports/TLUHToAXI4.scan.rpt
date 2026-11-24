@@ -1,0 +1,14 @@
+# TLUHToAXI4 — scan-readiness report (T4, OSS structural audit)
+# generated 2026-11-24T21:09:29Z
+
+HARD GATES
+  latch-free ................. PASS (0 D-latches)
+  no combinational loops ..... PASS (yosys check -assert)
+
+SCAN-PLANNING INVENTORY
+  flip-flops (scan length) ... 313
+    reset-controllable ....... 313 (100%)
+    no set/reset ............. 0
+    async set/reset .......... 0
+  latches (must be 0) ........ 0
+  memory arrays (MBIST) ...... 0

@@ -1,0 +1,37 @@
+# tl_axi4.upf — IEEE-1801 (UPF) power intent for the TileLink -> AXI4 bridges.
+#
+# Tapeout-readiness program T3 (../../DESIGN_READINESS.md). Written for the primary top
+# TLUHToAXI4; TLULToAXILite and TLUCToAXI4 are structurally identical (single clock,
+# fully synchronous reset), so the same single-domain intent applies.
+#
+# This block is a protocol bridge: combinational-dominant, SINGLE clock (`clock`), with no
+# memory macro and no sub-block that is independently idle for long enough to power-gate.
+# The honest power architecture is therefore ONE always-on domain. This UPF encodes exactly
+# that — it is the integration-level contract that says "no internal power gating": the IP's
+# low-power mechanism is fine-grained CLOCK GATING (expressed in RTL / SDC, not UPF), and any
+# power gating is the SoC integrator's decision at the parent (gate the whole instance when
+# the TileLink side is quiescent). Do not invent a switchable sub-domain here — there is no
+# retention/isolation boundary inside a single-cycle-latency protocol bridge.
+#
+# Authored collateral — a licensed VCS `-upf` run would confirm the (trivial) single-domain
+# semantics + RTL<->UPF LEC (needs-license); see LP_PLAN.md. `make lp` runs the OSS
+# consistency lint here.
+
+set_design_top TLUHToAXI4
+
+##############################################################################
+# Single always-on power domain.
+##############################################################################
+create_power_domain PD_CORE -elements {.}
+
+create_supply_port  VDD -domain PD_CORE
+create_supply_port  VSS -domain PD_CORE
+create_supply_net   VDD -domain PD_CORE
+create_supply_net   VSS -domain PD_CORE
+set_domain_supply_net PD_CORE -primary_power_net VDD -primary_ground_net VSS
+
+##############################################################################
+# Power states: a single always-on mode. (No switched rail: no power gating.)
+##############################################################################
+create_pst core_pst -supplies {VDD}
+add_pst_state P0_on -pst core_pst -state {ON}

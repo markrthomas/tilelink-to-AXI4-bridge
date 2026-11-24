@@ -140,7 +140,7 @@ CHI_VERILATOR_FLAGS := \
     -Mdir $(CHI_BUILD) \
     -CFLAGS "-std=c++17 -O2"
 
-.PHONY: help all elab elab-widths build sim run syn lint lint-decoder lint-widths lint-ulite lint-uc lint-chi \
+.PHONY: help all elab elab-widths build sim run syn dft lp lint lint-decoder lint-widths lint-ulite lint-uc lint-chi \
         check \
         build-ulite sim-ulite cocotb-ulite formal-ulite regress regress-ulite \
         build-uc sim-uc cocotb-uc formal-uc regress-uc \
@@ -324,6 +324,22 @@ regress-chi: lint-chi sim-chi
 #      excluded (coherence WIP). Part of the tapeout-readiness program; see syn/SIGNOFF.md.
 syn:
 	@bash $(CURDIR)/syn/synth.sh
+
+# dft: T4 DFT scan-readiness audit (Yosys, OSS — no PDK). Elaborates Chisel -> SV if
+#      needed, then on each bridge top's synthesized netlist asserts latch-free + no
+#      combinational loops (HARD gates) and inventories flops / reset controllability /
+#      async set-reset / RAM for scan planning. Scan insertion + ATPG = needs-license
+#      (see syn/dft/DFT_PLAN.md).
+dft:
+	@command -v yosys >/dev/null 2>&1 || { echo "[DFT] yosys not on PATH; skipping"; exit 0; }
+	@bash $(CURDIR)/syn/dft/scan_readiness.sh
+
+# lp: T3 low-power UPF consistency lint (tclsh, OSS — no PDK). Cross-checks the IEEE-1801
+#     UPF for internal consistency. This block is a single always-on domain (no power
+#     gating — see syn/lp/LP_PLAN.md); the lint confirms the contract is well-formed.
+lp:
+	@command -v tclsh >/dev/null 2>&1 || { echo "[LP] tclsh not on PATH; skipping"; exit 0; }
+	@tclsh $(CURDIR)/syn/lp/upf_lint.tcl $(CURDIR)/syn/lp/tl_axi4.upf
 
 # --------- Waveforms ---------
 # `wave`: one random run end to end. Rebuilds if needed and runs the TL-UH

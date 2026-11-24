@@ -1,0 +1,26 @@
+
+7. Printing statistics.
+
+=== TLULToAXILite ===
+
+        +----------Local Count, excluding submodules.
+        | 
+      180 wires
+      541 wire bits
+       80 public wires
+      441 public wire bits
+       41 ports
+      286 port bits
+      295 cells
+       16   $_ANDNOT_
+       59   $_AND_
+       19   $_MUX_
+       13   $_NAND_
+        5   $_NOR_
+       14   $_NOT_
+        7   $_ORNOT_
+       34   $_OR_
+      116   $_SDFFE_PP0N_
+        8   $_SDFFE_PP0P_
+        4   $_SDFF_PP0_
+
