@@ -269,3 +269,51 @@ at BMC depth 30 / cocotb 9 PASS.
   `~~### 1 — make lint target~~ ✓ DONE 2026-MM-DD`.
 - Convert near-term items to GitHub issues with acceptance criteria
   before starting.
+
+---
+
+## Tapeout readiness (design sign-off)
+
+> Part of the workspace program in [`../../DESIGN_READINESS.md`](../../DESIGN_READINESS.md).
+> Gate pass criteria + tooling/PDK reality live there. Tags: **[oss-pathfind]**,
+> **[needs-license]**, **[needs-pdk]**.
+
+### Realism note specific to this block
+Two things make this block different from the others: (1) it is **Chisel-generated RTL**, so
+sign-off is on the **emitted SystemVerilog**, and (2) its hardest feature — **`TLCToCHI`
+coherence** — is only 1 of 7 stages done. TileLink/AXI4/CHI are all public, so this repo can
+stay **public**. Finishing coherence is a large DV effort and is the gating prerequisite before
+the C→CHI path can sign off; the TL-UH/TL-UL/TL-C-to-AXI4 bridges are mature and can lead.
+
+### Chisel/generated-RTL prerequisites (before T1)
+- **Freeze the generation**: pin Chisel + firtool versions (currently 7.7.0 / 1.139.0) and make
+  `make elab` reproducible (hash-checked in CI). Day-to-day the emitted SV stays git-ignored and
+  edits go in the Scala (repo convention); for sign-off, **archive the hash-pinned generated SV
+  as a tagged release artifact** so the netlist that went through synth/STA/GLS is frozen.
+- Sign-off **lint + structural CDC** must run on the *generated* SV, not the Chisel — FIRRTL
+  can emit constructs an ASIC lint flags; budget for a cleanup pass.
+- Validate the `dataBits ∈ {32,64,128,256}` width sweep as real **synthesis configs**, not just
+  elaboration/lint.
+
+### T-gate map
+- **T0 Spec freeze** — finish **`TLCToCHI` Stages 2–7** (snoop pipeline, dirty writeback,
+  GrantAck, multi-core) or scope the coherent path *out* of this tapeout and freeze TL-UH/UL/C→AXI4
+  only; cite TileLink + AXI4 + CHI (Issue-E) clauses.
+- **T1 Synth [needs-pdk]** — synth the emitted SV; memory strategy for the engine FIFOs; sign-off
+  lint/CDC on generated SV.
+- **T2 STA [needs-pdk]** — SDC per config; the fixed-priority D arbiter + read-burst-lock critical
+  path; Fmax across the width sweep.
+- **T3 Low-power [needs-license]** — author UPF if the bridge has gated domains; else document n/a.
+- **T4 DFT [needs-license]** — scan over the parallel read/write/atomic engines; ATPG; RAM MBIST.
+- **T5 Verif sign-off [needs-license]** — extend beyond the 183-job directed + 95.1% line + formal
+  to a documented coverage model; **coherence** needs a CHI agent + multi-core soak once Stages 2–7
+  land; cocotb/VCS parity.
+- **T6 GLS + PPA [needs-pdk]** — SDF GLS, power, RTL↔netlist LEC, PPA.
+- **T7 Integration/pkg** — target a real interconnect top (Chipyard/Rocket is the natural home);
+  address-map + diplomacy params; IP-XACT or Chisel-package deliverable; tagged release.
+
+### Ordered milestones
+1. Decide coherent-path scope: finish `TLCToCHI` or freeze non-coherent for this tapeout.
+2. Freeze generation (version pins + checked-in SV + reproducible CI). 3. Shared kit (pathfound
+   on #3). 4. T5 coverage model (+ coherence DV if in scope). 5. T1/T2 on generated SV.
+6. T3/T4. 7. T6 GLS/PPA. 8. T7 integrate into a top + package + tag.
