@@ -60,3 +60,7 @@ cocotb/__pycache__/
 cocotb/results.xml
 /test/random/runs/
 /docker/last-run-metrics.json
+
+# tapeout-readiness synth artifacts
+sim/synth_*.v
+sim/synth_*.log
