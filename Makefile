@@ -140,7 +140,7 @@ CHI_VERILATOR_FLAGS := \
     -Mdir $(CHI_BUILD) \
     -CFLAGS "-std=c++17 -O2"
 
-.PHONY: help all elab elab-widths build sim run lint lint-decoder lint-widths lint-ulite lint-uc lint-chi \
+.PHONY: help all elab elab-widths build sim run syn lint lint-decoder lint-widths lint-ulite lint-uc lint-chi \
         check \
         build-ulite sim-ulite cocotb-ulite formal-ulite regress regress-ulite \
         build-uc sim-uc cocotb-uc formal-uc regress-uc \
@@ -317,6 +317,13 @@ regress: lint lint-decoder lint-widths lint-ulite lint-uc lint-chi sim sim-ulite
 regress-ulite: lint-ulite sim-ulite
 regress-uc: lint-uc sim-uc
 regress-chi: lint-chi sim-chi
+
+# syn: T1 synthesizability gate (Yosys, OSS — no PDK). Elaborates Chisel -> SV if
+#      needed, then synthesizes the complete bridge tops (TLUHToAXI4 / TLULToAXILite /
+#      TLUCToAXI4) with a latch-free assert + cell/logic-depth ceilings. TLCToCHI is
+#      excluded (coherence WIP). Part of the tapeout-readiness program; see syn/SIGNOFF.md.
+syn:
+	@bash $(CURDIR)/syn/synth.sh
 
 # --------- Waveforms ---------
 # `wave`: one random run end to end. Rebuilds if needed and runs the TL-UH

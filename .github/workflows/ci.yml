@@ -130,3 +130,19 @@ jobs:
         run: make cocotb-chi
       - name: Coverage (make coverage-chi)
         run: make coverage-chi
+
+  synth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: sbt/setup-sbt@v1
+      - name: Install yosys
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y yosys
+      - name: T1 synthesizability gate (elab + synth, make syn)
+        run: make syn
