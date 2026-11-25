@@ -140,7 +140,7 @@ CHI_VERILATOR_FLAGS := \
     -Mdir $(CHI_BUILD) \
     -CFLAGS "-std=c++17 -O2"
 
-.PHONY: help all elab elab-widths build sim run syn dft lp lint lint-decoder lint-widths lint-ulite lint-uc lint-chi \
+.PHONY: help all elab elab-widths build sim run syn dft lp ppa pkg lint lint-decoder lint-widths lint-ulite lint-uc lint-chi \
         check \
         build-ulite sim-ulite cocotb-ulite formal-ulite regress regress-ulite \
         build-uc sim-uc cocotb-uc formal-uc regress-uc \
@@ -340,6 +340,21 @@ dft:
 lp:
 	@command -v tclsh >/dev/null 2>&1 || { echo "[LP] tclsh not on PATH; skipping"; exit 0; }
 	@tclsh $(CURDIR)/syn/lp/upf_lint.tcl $(CURDIR)/syn/lp/tl_axi4.upf
+
+# ppa: T6 PPA proxy baseline (Yosys, OSS — no PDK). Elaborates Chisel -> SV if needed, then
+#      per top tracks generic cells + flops (area) and logic depth / ltp (timing). Real
+#      area/power/timing = needs-pdk (syn/ppa/PPA_PLAN.md).
+ppa:
+	@command -v yosys >/dev/null 2>&1 || { echo "[PPA] yosys not on PATH; skipping"; exit 0; }
+	@bash $(CURDIR)/syn/ppa/ppa.sh
+
+# pkg: T7 packaging gate (OSS). Elaborates Chisel -> SV if needed, then validates the
+#      IP-XACT (IEEE 1685-2014) components: well-formed + structural + a hard IP-XACT<->SV
+#      model-port match per top (fails on drift). (T6 iverilog GLS is n/a for this Chisel/
+#      C++-TB block — the Verilator-netlist recipe is in syn/gls/T6_PLAN.md.)
+pkg:
+	@command -v xmllint >/dev/null 2>&1 || { echo "[PKG] xmllint not on PATH; skipping"; exit 0; }
+	@bash $(CURDIR)/pkg/check_ipxact.sh
 
 # --------- Waveforms ---------
 # `wave`: one random run end to end. Rebuilds if needed and runs the TL-UH
