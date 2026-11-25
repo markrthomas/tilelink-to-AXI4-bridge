@@ -151,9 +151,21 @@ jobs:
         run: make dft
       - name: T3 low-power UPF consistency lint
         run: make lp
+      - name: T6 PPA proxy baseline (per top; cells / flops / logic-depth)
+        run: make ppa
+      - name: T7 packaging — IP-XACT well-formed + structural + port-sync with SV
+        run: |
+          command -v xmllint >/dev/null 2>&1 || sudo apt-get update && sudo apt-get install -y libxml2-utils
+          make pkg
       - name: Upload DFT scan-readiness reports
         uses: actions/upload-artifact@v4
         with:
           name: dft-reports
           path: syn/dft/reports/
+          if-no-files-found: ignore
+      - name: Upload T6 PPA reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: t6-ppa-reports
+          path: syn/ppa/reports/
           if-no-files-found: ignore
