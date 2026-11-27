@@ -1,0 +1,18 @@
+{
+  "//": "LibreLane config for TLULToAXILite on sky130A / sky130_fd_sc_hd (kit templates/signoff/pnr/). RTL = the Chisel-emitted SV (generated/ulite/TLULToAXILite.sv, `make elab`; silicon.yml elaborates first). Single clock; Chisel sync reset is a timed input.",
+  "PDK": "sky130A",
+  "STD_CELL_LIBRARY": "sky130_fd_sc_hd",
+  "DESIGN_NAME": "TLULToAXILite",
+  "VERILOG_FILES": [
+    "dir::../../../generated/ulite/TLULToAXILite.sv"
+  ],
+  "CLOCK_PORT": "clock",
+  "CLOCK_PERIOD": 2.0,
+  "PNR_SDC_FILE": "dir::../../constraints/tl_axi4.sdc",
+  "SIGNOFF_SDC_FILE": "dir::../../constraints/tl_axi4.sdc",
+  "FP_CORE_UTIL": 40,
+  "//setup": "[\"\"] = LibreLane's setup checker matches no corner ([] would fall back to the PDK default tt); summarize.py reports setup + Fmax (PNR_SETUP_GATE=1 makes it fail). LibreLane's hold checker stays on (all corners).",
+  "SETUP_VIOLATION_CORNERS": [
+    ""
+  ]
+}

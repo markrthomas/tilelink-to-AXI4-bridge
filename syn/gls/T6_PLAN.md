@@ -43,3 +43,13 @@ claimed without the artifact.
 Liberty-mapped synthesis, SDF-annotated (timing) GLS, STA sign-off (OpenSTA/PrimeTime +
 `syn/constraints/tl_axi4.sdc`), post-P&R area/power, and RTL↔netlist LEC — the same
 needs-pdk tier as the sibling blocks.
+
+## sky130 P&R and post-route GLS (open PDK)
+
+`make pnr` (LibreLane, CI `silicon.yml`) routes all three tops on sky130A from the
+Chisel-emitted SV. **Post-route GLS is n/a here** (not run, not a pass). The sky130_fd_sc_hd
+functional models are UDP `primitive`s, which Verilator does not support, and this block has
+no Verilog self-checking TB that iverilog could run. Closing it needs one of:
+(a) a Verilog/SV directed TB per top (iverilog + the sky130 models, as the sibling blocks do);
+or (b) mapping the routed netlist onto behavioural cell models that Verilator accepts, then
+reusing the C++ harness (the recipe above).

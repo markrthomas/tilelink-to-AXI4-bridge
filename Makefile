@@ -356,6 +356,34 @@ pkg:
 	@command -v xmllint >/dev/null 2>&1 || { echo "[PKG] xmllint not on PATH; skipping"; exit 0; }
 	@bash $(CURDIR)/pkg/check_ipxact.sh
 
+# --- T7 full XSD validation + release bundle; T2 sky130 P&R (kit templates/signoff/) ---
+include pkg/pkg-xsd.mk
+RELEASE_OUT ?= dist
+REL_NAME := tilelink-to-axi4-bridge
+PNR_TOPS ?= TLUHToAXI4 TLULToAXILite TLUCToAXI4
+.PHONY: release release-verify release-check pnr
+
+# The release ships the emitted SV (generated_by `make elab`): elaborate first.
+release: $(SV)
+	@test -n "$(VERSION)" || { echo "usage: make release VERSION=x.y.z"; exit 2; }
+	python3 $(CURDIR)/scripts/make_release.py --version $(VERSION) --out $(RELEASE_OUT) $(if $(ALLOW_DIRTY),--allow-dirty)
+
+release-verify:
+	@test -n "$(VERSION)" || { echo "usage: make release-verify VERSION=x.y.z"; exit 2; }
+	python3 $(CURDIR)/scripts/make_release.py --verify $(RELEASE_OUT)/$(REL_NAME)-$(VERSION).tar.gz
+
+# Dry run (CI): two builds must be byte-identical and verify. Not a release (T0 open).
+release-check: $(SV)
+	python3 $(CURDIR)/scripts/make_release.py --version 0.0.0-ci --out /tmp/rel-a $(if $(ALLOW_DIRTY),--allow-dirty)
+	python3 $(CURDIR)/scripts/make_release.py --version 0.0.0-ci --out /tmp/rel-b $(if $(ALLOW_DIRTY),--allow-dirty)
+	cmp /tmp/rel-a/$(REL_NAME)-0.0.0-ci.tar.gz /tmp/rel-b/$(REL_NAME)-0.0.0-ci.tar.gz && echo "[REL] reproducible: two builds are byte-identical"
+	python3 $(CURDIR)/scripts/make_release.py --verify /tmp/rel-a/$(REL_NAME)-0.0.0-ci.tar.gz
+
+# Heavy (LibreLane in Docker, ~GBs): run in CI (.github/workflows/silicon.yml), not locally.
+# Post-route GLS is n/a here (C++ Verilator TBs; Verilator cannot run the sky130 UDP models).
+pnr: $(SV)
+	@for t in $(or $(TOP),$(PNR_TOPS)); do bash $(CURDIR)/syn/pnr/run_pnr.sh $$t || exit 1; done
+
 # --------- Waveforms ---------
 # `wave`: one random run end to end. Rebuilds if needed and runs the TL-UH
 # harness — the directed jobs plus the randomized sweep, which gets a fresh
