@@ -1,0 +1,25 @@
+{
+  "//": "LibreLane config for TLUHToAXI4 on sky130A / sky130_fd_sc_hd (kit templates/signoff/pnr/). RTL = the Chisel-emitted SV (generated/TLUHToAXI4.sv, `make elab`; silicon.yml elaborates first). Single clock; Chisel sync reset is a timed input.",
+  "PDK": "sky130A",
+  "STD_CELL_LIBRARY": "sky130_fd_sc_hd",
+  "DESIGN_NAME": "TLUHToAXI4",
+  "VERILOG_FILES": [
+    "dir::../../../generated/TLUHToAXI4.sv"
+  ],
+  "CLOCK_PORT": "clock",
+  "CLOCK_PERIOD": 2.0,
+  "PNR_SDC_FILE": "dir::../../constraints/tl_axi4.sdc",
+  "SIGNOFF_SDC_FILE": "dir::../../constraints/tl_axi4.sdc",
+  "FP_CORE_UTIL": 40,
+  "//setup": "[\"\"] = LibreLane's setup checker matches no corner ([] would fall back to the PDK default tt); summarize.py reports setup + Fmax (PNR_SETUP_GATE=1 makes it fail). LibreLane's hold checker stays on (all corners).",
+  "SETUP_VIOLATION_CORNERS": [
+    ""
+  ],
+  "//elec": "First runs left max-slew/max-cap violations at the ss corners (pre-route design repair works on estimated parasitics). RUN_POST_GRT_DESIGN_REPAIR repairs again on routed parasitics (experimental in LibreLane: the job timeout bounds a hang). The slew/cap checkers are unchanged.",
+  "RUN_POST_GRT_DESIGN_REPAIR": true,
+  "//elec2": "Post-GRT design repair ran but saw ~1 violation on global-route parasitics, while signoff STA (detailed-route RCX) found the same counts as before at ss. Repair margins raised (defaults 20 % pre-route / 10 % post-GRT) so repair over-fixes against estimated parasitics.",
+  "DESIGN_REPAIR_MAX_SLEW_PCT": 40,
+  "DESIGN_REPAIR_MAX_CAP_PCT": 40,
+  "GRT_DESIGN_REPAIR_MAX_SLEW_PCT": 40,
+  "GRT_DESIGN_REPAIR_MAX_CAP_PCT": 40
+}

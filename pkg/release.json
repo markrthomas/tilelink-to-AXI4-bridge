@@ -1,0 +1,83 @@
+{
+  "//": "Release manifest for scripts/make_release.py (kit templates/signoff/release/). Chisel IP: ships the Scala source (tracked) + the emitted SV (generated_by `make elab`, produced by the release gates). T0 is OPEN: no contract tag/doc yet, so the release workflow's pre-flight refuses to publish. At T0 freeze: write doc/design_contract.md, tag contract-v1.0, add it below as kind 'contract' and to required_kinds.",
+  "name": "tilelink-to-axi4-bridge",
+  "repo": "markrthomas/tilelink-to-axi4-bridge",
+  "contract_tag": "contract-v1.0",
+  "contract_doc": "doc/design_contract.md",
+  "report_glob": "syn/**/reports/*",
+  "required_kinds": [
+    "rtl",
+    "rtl-src",
+    "ip-xact",
+    "signoff"
+  ],
+  "deliverables": [
+    {
+      "path": "generated/TLUHToAXI4.sv",
+      "kind": "rtl",
+      "generated_by": "make elab"
+    },
+    {
+      "path": "generated/ulite/TLULToAXILite.sv",
+      "kind": "rtl",
+      "generated_by": "make elab"
+    },
+    {
+      "path": "generated/uc/TLUCToAXI4.sv",
+      "kind": "rtl",
+      "generated_by": "make elab"
+    },
+    {
+      "glob": "src/main/scala/**/*.scala",
+      "kind": "rtl-src"
+    },
+    {
+      "path": "build.sbt",
+      "kind": "rtl-src"
+    },
+    {
+      "path": "project/build.properties",
+      "kind": "rtl-src"
+    },
+    {
+      "path": "pkg/ip-xact/TLUHToAXI4.xml",
+      "kind": "ip-xact"
+    },
+    {
+      "path": "pkg/ip-xact/TLULToAXILite.xml",
+      "kind": "ip-xact"
+    },
+    {
+      "path": "pkg/ip-xact/TLUCToAXI4.xml",
+      "kind": "ip-xact"
+    },
+    {
+      "path": "pkg/INTEGRATION.md",
+      "kind": "doc"
+    },
+    {
+      "path": "pkg/RELEASE.md",
+      "kind": "doc"
+    },
+    {
+      "path": "syn/SIGNOFF.md",
+      "kind": "signoff"
+    },
+    {
+      "path": "syn/constraints/tl_axi4.sdc",
+      "kind": "constraints"
+    },
+    {
+      "path": "syn/lp/tl_axi4.upf",
+      "kind": "constraints"
+    },
+    {
+      "path": "README.md",
+      "kind": "doc"
+    },
+    {
+      "path": "LICENSE",
+      "kind": "license"
+    }
+  ]
+}

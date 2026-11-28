@@ -7,8 +7,8 @@ Chisel/C++-TB block (and the authored Verilator-netlist GLS recipe) — lives in
 
 `make ppa` emits, per top (`syn/ppa/reports/<top>.ppa.rpt`), from the Chisel-generated SV:
 - **area proxy** — generic cell count + flip-flop count (post-synth, flattened);
-- **timing proxy** — longest topological logic path (`ltp`), i.e. combinational depth.
+- **timing proxy** — longest topological combinational path (`ltp -noff`, stops at flops).
 
-Baselines (current): TLUHToAXI4 3191 cells / 319 ff / depth 147; TLULToAXILite 303 / 130 / 58;
-TLUCToAXI4 4248 / 421 / 272. `TLCToCHI` is excluded (coherence WIP), as in `syn/synth.sh`.
+Baselines (CI 2026-11-28): TLUHToAXI4 2673 cells / 319 ff / depth 122; TLULToAXILite 277 / 130 / 11;
+TLUCToAXI4 3907 / 421 / 121. (Earlier depths 147/58/272 counted through flops: plain `ltp`.) `TLCToCHI` is excluded (coherence WIP), as in `syn/synth.sh`.
 `make ppa` elaborates Chisel → SV first if `generated/` is missing.
