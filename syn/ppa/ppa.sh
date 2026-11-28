@@ -9,7 +9,7 @@
 # proxy baseline that is a real, tracked artifact and moves monotonically with the real
 # numbers:
 #   - AREA proxy  = generic cell count + flop count (post-synth, flattened).
-#   - TIMING proxy= longest topological logic path (`ltp`), i.e. combinational depth.
+#   - TIMING proxy= longest topological COMBINATIONAL path (`ltp -noff`: stops at flops)
 #   - POWER proxy = flop count (switching surface) — informational.
 set -euo pipefail
 
@@ -36,12 +36,13 @@ for TOP in $TOPS; do
       proc
       synth -top $TOP -flatten
       tee -o $OUT/$TOP.ppa.stat.txt stat
-      tee -o $OUT/$TOP.ppa.ltp.txt ltp
+      tee -o $OUT/$TOP.ppa.ltp.txt ltp -noff
   "; then
     echo "[PPA] $TOP: FAIL — synthesis error (see $log)"; rc=1; continue
   fi
-  cells=$( (grep -oE '[0-9]+ +cells' "$OUT/$TOP.ppa.stat.txt" || true) | tail -1 | grep -oE '[0-9]+' || echo "?")
-  flops=$( (grep -oE '[0-9]+ +\$_(S?DFF|DLATCH)[A-Z0-9_]*' "$OUT/$TOP.ppa.stat.txt" || true) | awk '{s+=$1} END{print s+0}')
+  # Yosys stat layout differs by version; parse both; no match = "?" (never 0).
+  cells=$( { grep -oE '[0-9]+ +cells$' "$OUT/$TOP.ppa.stat.txt"; grep -oE 'Number of cells: *[0-9]+' "$OUT/$TOP.ppa.stat.txt"; } 2>/dev/null | tail -1 | grep -oE '[0-9]+' || true); cells="${cells:-?}"
+  flops=$( { grep -oE '[0-9]+ +\$_(S?DFF|DLATCH)[A-Z0-9_]*' "$OUT/$TOP.ppa.stat.txt" | awk '{print $1}'; grep -oE '\$_(S?DFF|DLATCH)[A-Z0-9_]* +[0-9]+' "$OUT/$TOP.ppa.stat.txt" | awk '{print $2}'; } 2>/dev/null | awk '{s+=$1; n++} END{if (n) print s; else print "?"}')
   depth=$( (grep -oiE 'length=[0-9]+' "$OUT/$TOP.ppa.ltp.txt" || true) | tail -1 | grep -oE '[0-9]+' || echo "?")
   {
     echo "# $TOP — PPA proxy baseline (T6, OSS technology-independent)"
