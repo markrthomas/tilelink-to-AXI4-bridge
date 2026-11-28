@@ -41,8 +41,8 @@ for TOP in $TOPS; do
     echo "[PPA] $TOP: FAIL — synthesis error (see $log)"; rc=1; continue
   fi
   # Yosys stat layout differs by version; parse both; no match = "?" (never 0).
-  cells=$( { grep -oE '[0-9]+ +cells$' "$OUT/$TOP.ppa.stat.txt"; grep -oE 'Number of cells: *[0-9]+' "$OUT/$TOP.ppa.stat.txt"; } 2>/dev/null | tail -1 | grep -oE '[0-9]+' || true); cells="${cells:-?}"
-  flops=$( { grep -oE '[0-9]+ +\$_(S?DFF|DLATCH)[A-Z0-9_]*' "$OUT/$TOP.ppa.stat.txt" | awk '{print $1}'; grep -oE '\$_(S?DFF|DLATCH)[A-Z0-9_]* +[0-9]+' "$OUT/$TOP.ppa.stat.txt" | awk '{print $2}'; } 2>/dev/null | awk '{s+=$1; n++} END{if (n) print s; else print "?"}')
+  cells=$( { grep -oE '[0-9]+ +cells$' "$OUT/$TOP.ppa.stat.txt" || true; grep -oE 'Number of cells: *[0-9]+' "$OUT/$TOP.ppa.stat.txt" || true; } 2>/dev/null | tail -1 | grep -oE '[0-9]+' || true); cells="${cells:-?}"
+  flops=$( { grep -oE '[0-9]+ +\$_(S?DFF|DLATCH)[A-Z0-9_]*' "$OUT/$TOP.ppa.stat.txt" | awk '{print $1}' || true; grep -oE '\$_(S?DFF|DLATCH)[A-Z0-9_]* +[0-9]+' "$OUT/$TOP.ppa.stat.txt" | awk '{print $2}' || true; } 2>/dev/null | awk '{s+=$1; n++} END{if (n) print s; else print "?"}')
   depth=$( (grep -oiE 'length=[0-9]+' "$OUT/$TOP.ppa.ltp.txt" || true) | tail -1 | grep -oE '[0-9]+' || echo "?")
   {
     echo "# $TOP — PPA proxy baseline (T6, OSS technology-independent)"
