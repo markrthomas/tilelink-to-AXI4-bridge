@@ -16,5 +16,10 @@
     ""
   ],
   "//elec": "First runs left max-slew/max-cap violations at the ss corners (pre-route design repair works on estimated parasitics). RUN_POST_GRT_DESIGN_REPAIR repairs again on routed parasitics (experimental in LibreLane: the job timeout bounds a hang). The slew/cap checkers are unchanged.",
-  "RUN_POST_GRT_DESIGN_REPAIR": true
+  "RUN_POST_GRT_DESIGN_REPAIR": true,
+  "//elec2": "Post-GRT design repair ran but saw ~1 violation on global-route parasitics, while signoff STA (detailed-route RCX) found the same counts as before at ss. Repair margins raised (defaults 20 % pre-route / 10 % post-GRT) so repair over-fixes against estimated parasitics.",
+  "DESIGN_REPAIR_MAX_SLEW_PCT": 40,
+  "DESIGN_REPAIR_MAX_CAP_PCT": 40,
+  "GRT_DESIGN_REPAIR_MAX_SLEW_PCT": 40,
+  "GRT_DESIGN_REPAIR_MAX_CAP_PCT": 40
 }
