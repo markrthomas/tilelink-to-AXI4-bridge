@@ -14,5 +14,7 @@
   "//setup": "[\"\"] = LibreLane's setup checker matches no corner ([] would fall back to the PDK default tt); summarize.py reports setup + Fmax (PNR_SETUP_GATE=1 makes it fail). LibreLane's hold checker stays on (all corners).",
   "SETUP_VIOLATION_CORNERS": [
     ""
-  ]
+  ],
+  "//elec": "First runs left max-slew/max-cap violations at the ss corners (pre-route design repair works on estimated parasitics). RUN_POST_GRT_DESIGN_REPAIR repairs again on routed parasitics (experimental in LibreLane: the job timeout bounds a hang). The slew/cap checkers are unchanged.",
+  "RUN_POST_GRT_DESIGN_REPAIR": true
 }
